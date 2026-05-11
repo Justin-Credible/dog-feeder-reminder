@@ -1,5 +1,7 @@
 using Meadow;
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
@@ -11,25 +13,44 @@ public class WebServerManager
     const string Tag = "WebServerManager";
     readonly WiFiManager wifiManager;
     readonly DeviceTimeManager deviceTimeManager;
+    readonly FeedingManager feedingManager;
+    readonly PowerStatusManager powerStatusManager;
+    readonly HttpResponseManager responseManager;
     readonly DateTimeOffset startedAt;
     readonly string deviceName;
-    readonly string ledState;
 
     HttpListener webServer;
     bool webServerStarted;
+    readonly TaskCompletionSource<bool> webServerReadySource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly object tokenGate = new object();
+    readonly Dictionary<string, DateTimeOffset> activeFormTokens = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+    static readonly TimeSpan FormTokenLifetime = TimeSpan.FromMinutes(5);
 
     public WebServerManager(
         WiFiManager wifiManager,
         DeviceTimeManager deviceTimeManager,
+        FeedingManager feedingManager,
+        PowerStatusManager powerStatusManager,
         DateTimeOffset startedAt,
-        string deviceName,
-        string ledState)
+        string deviceName)
     {
         this.wifiManager = wifiManager;
         this.deviceTimeManager = deviceTimeManager;
+        this.feedingManager = feedingManager;
+        this.powerStatusManager = powerStatusManager;
+        this.responseManager = new HttpResponseManager();
         this.startedAt = startedAt;
         this.deviceName = deviceName;
-        this.ledState = ledState;
+    }
+
+    public Task WaitForStartedAsync()
+    {
+        if (webServerStarted)
+        {
+            return Task.CompletedTask;
+        }
+
+        return webServerReadySource.Task;
     }
 
     public async Task StartAsync()
@@ -43,6 +64,7 @@ public class WebServerManager
         if (ipAddress == null)
         {
             Logger.Error(Tag, "WiFi reported ready but no IP address was available.");
+            webServerReadySource.TrySetException(new InvalidOperationException("No IP address available for web server startup."));
             return;
         }
 
@@ -50,6 +72,7 @@ public class WebServerManager
         webServer.Prefixes.Add($"http://{ipAddress}:8081/");
         webServer.Start();
         webServerStarted = true;
+        webServerReadySource.TrySetResult(true);
 
         Logger.Info(Tag, $"Web server listening at http://{ipAddress}:8081/");
 
@@ -64,6 +87,7 @@ public class WebServerManager
         catch (Exception ex)
         {
             Logger.Error(Tag, $"Web server stopped: {ex.Message}");
+            webServerReadySource.TrySetException(ex);
         }
         finally
         {
@@ -75,21 +99,49 @@ public class WebServerManager
     {
         var request = context.Request;
         var response = context.Response;
+        var absolutePath = request.Url.AbsolutePath;
 
         Logger.Info(Tag, $"HTTP {request.HttpMethod} {request.Url}");
 
+        if (absolutePath.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase))
+        {
+            response.StatusCode = (int)HttpStatusCode.NoContent;
+            response.Close();
+            return;
+        }
+
+        if (absolutePath.Equals("/feedings/mark", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleFeedingMarkRequestAsync(request, response);
+            return;
+        }
+
         string body;
         string contentType;
+        response.StatusCode = (int)HttpStatusCode.OK;
 
-        if (request.Url.AbsolutePath.Equals("/api/diagnostics", StringComparison.OrdinalIgnoreCase))
+        if (absolutePath.Equals("/api/diagnostics", StringComparison.OrdinalIgnoreCase))
         {
             contentType = "application/json";
-            body = BuildDiagnosticsJson();
+            body = BuildDiagnosticsJsonResponse();
+        }
+        else if (absolutePath.Equals("/api/feedings", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType = "application/json";
+            body = BuildFeedingsJsonResponse();
+        }
+        else if (absolutePath.Equals("/", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType = "text/html";
+            var notice = request.QueryString["notice"];
+            var level = request.QueryString["level"];
+            body = BuildMainPageResponse(notice, level);
         }
         else
         {
-            contentType = "text/html";
-            body = BuildDiagnosticsPage();
+            response.StatusCode = (int)HttpStatusCode.NotFound;
+            contentType = "text/plain";
+            body = "Not Found";
         }
 
         byte[] payload = Encoding.UTF8.GetBytes(body);
@@ -101,75 +153,228 @@ public class WebServerManager
         response.Close();
     }
 
-    string BuildDiagnosticsPage()
+    async Task HandleFeedingMarkRequestAsync(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        if (!request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
+            response.ContentType = "text/plain";
+            byte[] methodError = Encoding.UTF8.GetBytes("Method Not Allowed");
+            response.ContentLength64 = methodError.LongLength;
+            await response.OutputStream.WriteAsync(methodError, 0, methodError.Length);
+            response.Close();
+            return;
+        }
+
+        var formValues = await ReadFormDataAsync(request);
+        var formToken = formValues.TryGetValue("formToken", out var formTokenValue) ? formTokenValue : string.Empty;
+
+        if (!TryConsumeFormToken(formToken))
+        {
+            RedirectToNotice(response, "Duplicate or invalid form submission. Please refresh and try again.", "error");
+            response.Close();
+            return;
+        }
+
+        var action = formValues.TryGetValue("action", out var actionValue) ? actionValue : "mark";
+        var slot = formValues.TryGetValue("slot", out var slotValue) ? slotValue : string.Empty;
+        string notice;
+        string level = "success";
+
+        if (action.Equals("reset", StringComparison.OrdinalIgnoreCase))
+        {
+            feedingManager.ResetFeedings();
+            notice = $"Feedings reset at {DateTime.Now:HH:mm:ss}.";
+        }
+        else if (slot.Equals("morning", StringComparison.OrdinalIgnoreCase))
+        {
+            feedingManager.MarkFeeding(FeedingWindow.Morning);
+            notice = $"Morning feeding marked at {DateTime.Now:HH:mm:ss}.";
+        }
+        else if (slot.Equals("evening", StringComparison.OrdinalIgnoreCase))
+        {
+            feedingManager.MarkFeeding(FeedingWindow.Evening);
+            notice = $"Evening feeding marked at {DateTime.Now:HH:mm:ss}.";
+        }
+        else if (slot.Equals("both", StringComparison.OrdinalIgnoreCase))
+        {
+            feedingManager.MarkFeeding(FeedingWindow.Morning);
+            feedingManager.MarkFeeding(FeedingWindow.Evening);
+            notice = $"Morning and evening feedings marked at {DateTime.Now:HH:mm:ss}.";
+        }
+        else
+        {
+            Logger.Warn(Tag, $"Unknown feeding mark request. action={action}, slot={slot}");
+            notice = "Unknown action request.";
+            level = "error";
+        }
+
+        RedirectToNotice(response, notice, level);
+        response.Close();
+    }
+
+    static void RedirectToNotice(HttpListenerResponse response, string notice, string level)
+    {
+        response.StatusCode = (int)HttpStatusCode.Redirect;
+        response.RedirectLocation = $"/?notice={WebUtility.UrlEncode(notice)}&level={WebUtility.UrlEncode(level)}";
+    }
+
+    static async Task<Dictionary<string, string>> ReadFormDataAsync(HttpListenerRequest request)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (request.InputStream == null)
+        {
+            return values;
+        }
+
+        using var reader = new StreamReader(request.InputStream, request.ContentEncoding ?? Encoding.UTF8);
+        var raw = await reader.ReadToEndAsync();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return values;
+        }
+
+        var parts = raw.Split('&');
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrWhiteSpace(part))
+            {
+                continue;
+            }
+
+            var index = part.IndexOf('=');
+            if (index < 0)
+            {
+                continue;
+            }
+
+            var key = WebUtility.UrlDecode(part.Substring(0, index));
+            var value = WebUtility.UrlDecode(part.Substring(index + 1));
+
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                values[key] = value;
+            }
+        }
+
+        return values;
+    }
+
+    string BuildMainPageResponse(string notice = null, string noticeLevel = null)
     {
         var uptime = DateTimeOffset.UtcNow - startedAt;
+        var uptimeText = FormatDuration(uptime);
+        var feedingStatus = feedingManager.GetStatusSnapshot();
+        var powerStatus = powerStatusManager.GetSnapshot();
+        var formToken = IssueFormToken();
         var ipText = wifiManager.CurrentIpAddress != null
             ? wifiManager.CurrentIpAddress.ToString()
             : "waiting for WiFi";
-
-        var html = new StringBuilder();
-        html.AppendLine("<!DOCTYPE html>");
-        html.AppendLine("<html lang=\"en\">");
-        html.AppendLine("<head>");
-        html.AppendLine("    <meta charset=\"utf-8\" />");
-        html.AppendLine("    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />");
-        html.AppendLine("    <title>Dog Feeder Diagnostics</title>");
-        html.AppendLine("    <style>");
-        html.AppendLine("        :root { color-scheme: light; --bg: #f4f0e8; --panel: #fffdf8; --text: #1d2328; --muted: #5f6b73; --accent: #d97706; --border: #d8d0c2; }");
-        html.AppendLine("        body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: linear-gradient(180deg, #fff7ea 0%, var(--bg) 45%, #eef3f7 100%); color: var(--text); }");
-        html.AppendLine("        main { max-width: 900px; margin: 0 auto; padding: 24px; }");
-        html.AppendLine("        .hero { background: var(--panel); border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: 0 12px 32px rgba(29, 35, 40, 0.08); }");
-        html.AppendLine("        h1 { margin: 0 0 8px; font-size: 2rem; }");
-        html.AppendLine("        p { margin: 0 0 16px; color: var(--muted); line-height: 1.5; }");
-        html.AppendLine("        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 20px; }");
-        html.AppendLine("        .card { background: #ffffff; border: 1px solid var(--border); border-radius: 16px; padding: 16px; }");
-        html.AppendLine("        .label { display: block; color: var(--muted); font-size: 0.84rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }");
-        html.AppendLine("        .value { font-size: 1.1rem; font-weight: 700; }");
-        html.AppendLine("        a { color: var(--accent); text-decoration: none; }");
-        html.AppendLine("        code { background: #f4efe6; padding: 2px 6px; border-radius: 8px; }");
-        html.AppendLine("    </style>");
-        html.AppendLine("</head>");
-        html.AppendLine("<body>");
-        html.AppendLine("    <main>");
-        html.AppendLine("        <section class=\"hero\">");
-        html.AppendLine("            <h1>Dog Feeder Diagnostics</h1>");
-        html.AppendLine("            <p>Live status for the Feather F7. Use this page to confirm WiFi, uptime, and app state from any browser on the same network.</p>");
-        html.AppendLine("            <p>JSON endpoint: <a href=\"/api/diagnostics\">/api/diagnostics</a></p>");
-        html.AppendLine("            <div class=\"grid\">");
-        html.AppendLine($"                <div class=\"card\"><span class=\"label\">WiFi</span><div class=\"value\">{wifiManager.ConnectionState}</div></div>");
-        html.AppendLine($"                <div class=\"card\"><span class=\"label\">IP Address</span><div class=\"value\">{ipText}</div></div>");
-        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Device Time</span><div class=\"value\">{deviceTimeManager.CurrentDeviceTimeText}</div></div>");
-        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Uptime</span><div class=\"value\">{FormatDuration(uptime)}</div></div>");
-        html.AppendLine($"                <div class=\"card\"><span class=\"label\">LED Cycle</span><div class=\"value\">{ledState}</div></div>");
-        html.AppendLine("            </div>");
-        html.AppendLine("        </section>");
-        html.AppendLine("    </main>");
-        html.AppendLine("</body>");
-        html.AppendLine("</html>");
-
-        return html.ToString();
+        return responseManager.BuildMainPage(new MainPageResponseOptions
+        {
+            Notice = notice,
+            NoticeLevel = noticeLevel,
+            FormToken = formToken,
+            FeedingStateText = feedingManager.FeedingStateText,
+            IndicatorStateText = feedingManager.IndicatorStateText,
+            FeedingStatus = feedingStatus,
+            WiFiConnectionState = wifiManager.ConnectionState,
+            IpText = ipText,
+            DeviceTimeText = deviceTimeManager.CurrentDeviceTimeText,
+            UptimeText = uptimeText,
+            PowerStatus = powerStatus,
+        });
     }
 
-    string BuildDiagnosticsJson()
+    string BuildDiagnosticsJsonResponse()
     {
         var uptime = DateTimeOffset.UtcNow - startedAt;
+        var uptimeText = FormatDuration(uptime);
+        var feedingStatus = feedingManager.GetStatusSnapshot();
+        var powerStatus = powerStatusManager.GetSnapshot();
         var ipText = wifiManager.CurrentIpAddress != null ? wifiManager.CurrentIpAddress.ToString() : string.Empty;
 
-        return "{" +
-               $"\"device\":\"{EscapeJson(deviceName)}\"," +
-               $"\"wifiConnected\":{wifiManager.IsConnected.ToString().ToLowerInvariant()}," +
-               $"\"wifiState\":\"{EscapeJson(wifiManager.ConnectionState)}\"," +
-               $"\"ipAddress\":\"{EscapeJson(ipText)}\"," +
-               $"\"deviceTime\":\"{EscapeJson(deviceTimeManager.CurrentDeviceTimeText)}\"," +
-               $"\"uptime\":\"{FormatDuration(uptime)}\"," +
-               $"\"ledState\":\"{EscapeJson(ledState)}\"" +
-               "}";
+        return responseManager.BuildDiagnosticsJson(new DiagnosticsJsonOptions
+        {
+            DeviceName = deviceName,
+            WiFiConnected = wifiManager.IsConnected,
+            WiFiState = wifiManager.ConnectionState,
+            IpAddress = ipText,
+            DeviceTime = deviceTimeManager.CurrentDeviceTimeText,
+            Uptime = uptimeText,
+            FeedingState = feedingManager.FeedingStateText,
+            IndicatorState = feedingManager.IndicatorStateText,
+            FeedingStatus = feedingStatus,
+            PowerStatus = powerStatus,
+        });
     }
 
-    static string EscapeJson(string value)
+    string BuildFeedingsJsonResponse()
     {
-        return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        var feedingStatus = feedingManager.GetStatusSnapshot();
+        return responseManager.BuildFeedingsJson(new FeedingsJsonOptions
+        {
+            FeedingStatus = feedingStatus,
+            Summary = feedingManager.FeedingStateText,
+        });
+    }
+
+    string IssueFormToken()
+    {
+        lock (tokenGate)
+        {
+            PruneExpiredFormTokensLocked(DateTimeOffset.UtcNow);
+            var token = Guid.NewGuid().ToString("N");
+            activeFormTokens[token] = DateTimeOffset.UtcNow;
+            return token;
+        }
+    }
+
+    bool TryConsumeFormToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        lock (tokenGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            PruneExpiredFormTokensLocked(now);
+
+            if (!activeFormTokens.TryGetValue(token, out var issuedAt))
+            {
+                return false;
+            }
+
+            if (now - issuedAt > FormTokenLifetime)
+            {
+                activeFormTokens.Remove(token);
+                return false;
+            }
+
+            activeFormTokens.Remove(token);
+            return true;
+        }
+    }
+
+    void PruneExpiredFormTokensLocked(DateTimeOffset now)
+    {
+        var keysToRemove = new List<string>();
+
+        foreach (var item in activeFormTokens)
+        {
+            if (now - item.Value > FormTokenLifetime)
+            {
+                keysToRemove.Add(item.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            activeFormTokens.Remove(key);
+        }
     }
 
     static string FormatDuration(TimeSpan duration)

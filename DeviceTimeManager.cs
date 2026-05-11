@@ -11,10 +11,22 @@ public class DeviceTimeManager
 
     bool deviceTimeLogged;
     bool monitoringStarted;
+    readonly TaskCompletionSource<bool> validTimeSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public DateTime CurrentDeviceTime => DateTime.Now;
 
     public string CurrentDeviceTimeText => FormatDeviceTime(CurrentDeviceTime);
+
+    public Task WaitForValidTimeAsync()
+    {
+        if (IsDeviceTimeValid())
+        {
+            validTimeSource.TrySetResult(true);
+            return Task.CompletedTask;
+        }
+
+        return validTimeSource.Task;
+    }
 
     public void StartMonitoring()
     {
@@ -34,6 +46,7 @@ public class DeviceTimeManager
             if (IsDeviceTimeValid())
             {
                 deviceTimeLogged = true;
+                validTimeSource.TrySetResult(true);
                 Logger.Info(Tag, $"Device time set to {CurrentDeviceTimeText}");
                 return;
             }
