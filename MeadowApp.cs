@@ -1,4 +1,4 @@
-﻿using Meadow;
+using Meadow;
 using Meadow.Devices;
 using Meadow.Foundation.Leds;
 using Meadow.Peripherals.Leds;
@@ -10,10 +10,13 @@ namespace dog_feeder_reminder;
 public class MeadowApp : App<F7FeatherV2>
 {
     RgbPwmLed onboardLed;
+    WiFiManager wifiManager;
+    DeviceTimeManager deviceTimeManager;
+    WebServerManager webServerManager;
 
-    public override Task Initialize()
+    public override async Task Initialize()
     {
-        Resolver.Log.Info("Initialize...");
+        Logger.Info("MeadowApp", "Initialize...");
 
         onboardLed = new RgbPwmLed(
             redPwmPin: Device.Pins.OnboardLedRed,
@@ -21,12 +24,34 @@ public class MeadowApp : App<F7FeatherV2>
             bluePwmPin: Device.Pins.OnboardLedBlue,
             CommonType.CommonAnode);
 
-        return base.Initialize();
+        wifiManager = new WiFiManager(
+            Device.NetworkAdapters.Primary<Meadow.Hardware.IWiFiNetworkAdapter>()
+        );
+
+        deviceTimeManager = new DeviceTimeManager();
+        deviceTimeManager.StartMonitoring();
+
+        var deviceName = string.IsNullOrWhiteSpace(Device.Information.DeviceName)
+            ? "(unknown device name)"
+            : Device.Information.DeviceName;
+
+        webServerManager = new WebServerManager(
+            wifiManager,
+            deviceTimeManager,
+            DateTimeOffset.UtcNow,
+            deviceName,
+            "cycling");
+
+        await wifiManager.InitializeAsync();
+
+        await base.Initialize();
     }
 
     public override Task Run()
     {
-        Resolver.Log.Info("Run...");
+        Logger.Info("MeadowApp", "Run...");
+
+        _ = Task.Run(webServerManager.StartAsync);
 
         return CycleColors(TimeSpan.FromMilliseconds(1000));
     }
