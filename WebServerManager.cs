@@ -26,6 +26,8 @@ public class WebServerManager
     readonly Dictionary<string, DateTimeOffset> activeFormTokens = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
     static readonly TimeSpan FormTokenLifetime = TimeSpan.FromMinutes(5);
 
+    public bool IsStarted => webServerStarted;
+
     public WebServerManager(
         WiFiManager wifiManager,
         DeviceTimeManager deviceTimeManager,
@@ -80,8 +82,26 @@ public class WebServerManager
         {
             while (webServerStarted)
             {
-                var context = await webServer.GetContextAsync();
-                await ProcessRequestAsync(context);
+                HttpListenerContext context;
+                try
+                {
+                    context = await webServer.GetContextAsync();
+                }
+                catch (HttpListenerException ex)
+                {
+                    Logger.Warn(Tag, $"Web server listener error: {ex.Message}");
+                    continue;
+                }
+
+                try
+                {
+                    await ProcessRequestAsync(context);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(Tag, $"Request handling failed: {ex.Message}");
+                    SafeCloseResponse(context?.Response);
+                }
             }
         }
         catch (Exception ex)
@@ -91,7 +111,24 @@ public class WebServerManager
         }
         finally
         {
+            webServerStarted = false;
             webServer?.Close();
+        }
+    }
+
+    static void SafeCloseResponse(HttpListenerResponse response)
+    {
+        if (response == null)
+        {
+            return;
+        }
+
+        try
+        {
+            response.Close();
+        }
+        catch
+        {
         }
     }
 
@@ -278,6 +315,8 @@ public class WebServerManager
             FormToken = formToken,
             FeedingStateText = feedingManager.FeedingStateText,
             IndicatorStateText = feedingManager.IndicatorStateText,
+            MorningWindowLabel = feedingManager.MorningWindowLabel,
+            EveningWindowLabel = feedingManager.EveningWindowLabel,
             FeedingStatus = feedingStatus,
             WiFiConnectionState = wifiManager.ConnectionState,
             IpText = ipText,

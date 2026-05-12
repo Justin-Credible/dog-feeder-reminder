@@ -32,7 +32,7 @@ public class WiFiManager
 
     public Task<IPAddress> WaitForNetworkReadyAsync()
     {
-        if (CurrentIpAddress != null)
+        if (IsUsableUnicastIpAddress(CurrentIpAddress))
         {
             return Task.FromResult(CurrentIpAddress);
         }
@@ -57,8 +57,17 @@ public class WiFiManager
 
         if (wifi.IsConnected)
         {
-            CurrentIpAddress = wifi.IpAddress;
-            networkReadySource.TrySetResult(CurrentIpAddress);
+            var candidateIp = wifi.IpAddress;
+            if (IsUsableUnicastIpAddress(candidateIp))
+            {
+                CurrentIpAddress = candidateIp;
+                networkReadySource.TrySetResult(CurrentIpAddress);
+            }
+            else
+            {
+                Logger.Warn(Tag, $"WiFi reports connected but IP is not yet usable: {candidateIp}");
+            }
+
             return;
         }
 
@@ -69,8 +78,17 @@ public class WiFiManager
     {
         if (wifi.IsConnected)
         {
-            CurrentIpAddress = wifi.IpAddress;
-            networkReadySource.TrySetResult(CurrentIpAddress);
+            var candidateIp = wifi.IpAddress;
+            if (IsUsableUnicastIpAddress(candidateIp))
+            {
+                CurrentIpAddress = candidateIp;
+                networkReadySource.TrySetResult(CurrentIpAddress);
+            }
+            else
+            {
+                Logger.Warn(Tag, $"WiFi is connected but IP is not yet usable: {candidateIp}");
+            }
+
             return;
         }
 
@@ -155,9 +173,16 @@ public class WiFiManager
     {
         isConnecting = false;
         connectingSince = DateTimeOffset.MinValue;
-        CurrentIpAddress = args.IpAddress;
-        networkReadySource.TrySetResult(CurrentIpAddress);
-        Logger.Info(Tag, $"WiFi connected. IP address: {CurrentIpAddress}");
+        if (IsUsableUnicastIpAddress(args.IpAddress))
+        {
+            CurrentIpAddress = args.IpAddress;
+            networkReadySource.TrySetResult(CurrentIpAddress);
+            Logger.Info(Tag, $"WiFi connected. IP address: {CurrentIpAddress}");
+        }
+        else
+        {
+            Logger.Warn(Tag, $"WiFi connected event received with non-usable IP: {args.IpAddress}. Waiting for valid DHCP address.");
+        }
     }
 
     void OnNetworkConnecting(INetworkAdapter sender)
@@ -175,6 +200,45 @@ public class WiFiManager
     {
         isConnecting = false;
         connectingSince = DateTimeOffset.MinValue;
+        CurrentIpAddress = null;
         Logger.Warn(Tag, $"WiFi disconnected because {args.Reason}");
+
+        _ = Task.Run(EnsureConnectedAsync);
+    }
+
+    static bool IsUsableUnicastIpAddress(IPAddress ipAddress)
+    {
+        if (ipAddress == null)
+        {
+            return false;
+        }
+
+        if (ipAddress.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return false;
+        }
+
+        if (IPAddress.IsLoopback(ipAddress))
+        {
+            return false;
+        }
+
+        var bytes = ipAddress.GetAddressBytes();
+        if (bytes.Length != 4)
+        {
+            return false;
+        }
+
+        if (bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0 && bytes[3] == 0)
+        {
+            return false;
+        }
+
+        if (bytes[0] == 255 && bytes[1] == 255 && bytes[2] == 255 && bytes[3] == 255)
+        {
+            return false;
+        }
+
+        return true;
     }
 }

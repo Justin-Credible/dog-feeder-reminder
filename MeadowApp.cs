@@ -14,11 +14,14 @@ public class MeadowApp : App<F7FeatherV2>
     const string Tag = "MeadowApp";
 
     static readonly TimeSpan PlatformBlinkInterval = TimeSpan.FromSeconds(1);
+    static readonly TimeSpan PlatformRecoveryBlinkInterval = TimeSpan.FromMilliseconds(500);
+    static readonly TimeSpan ConnectivityCheckInterval = TimeSpan.FromSeconds(2);
     static readonly TimeSpan FeedButtonHardwareDebounce = TimeSpan.FromMilliseconds(30);
     static readonly TimeSpan FeedButtonHardwareGlitch = TimeSpan.FromMilliseconds(5);
     static readonly TimeSpan FeedButtonDebounceInterval = TimeSpan.FromMilliseconds(120);
 
     RgbPwmLed platformLed;
+    IDigitalOutputPort externalPlatformLed;
     IDigitalOutputPort dayFeedingLed;
     IDigitalOutputPort nightFeedingLed;
     IDigitalInterruptPort feedButtonPort;
@@ -48,11 +51,12 @@ public class MeadowApp : App<F7FeatherV2>
 
         dayFeedingLed = Device.CreateDigitalOutputPort(Device.Pins.D01, false);
         nightFeedingLed = Device.CreateDigitalOutputPort(Device.Pins.D02, false);
+        externalPlatformLed = Device.CreateDigitalOutputPort(Device.Pins.D04, false);
 
         feedButtonPort = Device.CreateDigitalInterruptPort(
             Device.Pins.D03,
-            InterruptMode.EdgeRising,
-            ResistorMode.InternalPullDown,
+            InterruptMode.EdgeFalling,
+            ResistorMode.InternalPullUp,
             FeedButtonHardwareDebounce,
             FeedButtonHardwareGlitch);
 
@@ -69,9 +73,14 @@ public class MeadowApp : App<F7FeatherV2>
         deviceTimeManager = new DeviceTimeManager();
         deviceTimeManager.StartMonitoring();
 
+        var configuration = ConfigurationManager.LoadDogFeederConfiguration(Settings);
         pushNotificationManager = new PushNotificationManager();
-        feedingManager = new FeedingManager(pushNotificationManager);
+        feedingManager = new FeedingManager(
+            pushNotificationManager,
+            configuration.FeedingSchedule,
+            nowProvider: () => DateTime.UtcNow + configuration.FeedingScheduleUtcOffset);
         feedingManager.IndicatorStateChanged += OnIndicatorStateChanged;
+        OnIndicatorStateChanged(feedingManager.CurrentIndicatorState);
         powerStatusManager = new PowerStatusManager(Device);
 
         var deviceName = string.IsNullOrWhiteSpace(Device.Information.DeviceName)
@@ -116,26 +125,35 @@ public class MeadowApp : App<F7FeatherV2>
             // Expected once startup readiness is achieved.
         }
 
+        await platformLed.StopAnimation();
         platformLed.SetColor(Color.Green);
+        externalPlatformLed.State = true;
         isSystemReady = true;
         Logger.Info(Tag, "System ready. Platform LED set to solid on.");
+
+        _ = Task.Run(() => MaintainConnectivityAndPlatformStateAsync(appLifetimeSource.Token), appLifetimeSource.Token);
     }
 
     async Task BlinkPlatformLedUntilReadyAsync(CancellationToken cancellationToken)
     {
+        var externalLedOn = false;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             await platformLed.StartPulse(Color.Blue, TimeSpan.FromMilliseconds(500));
+
+            externalLedOn = !externalLedOn;
+            externalPlatformLed.State = externalLedOn;
+
             await Task.Delay(PlatformBlinkInterval, cancellationToken);
         }
+
+        externalPlatformLed.State = false;
     }
 
     void OnFeedButtonChanged(object sender, DigitalPortResult result)
     {
-        if (!isSystemReady)
-        {
-            return;
-        }
+        Logger.Info(Tag, "Feed button interrupt detected.");
 
         // Hardware debounce/glitch filtering handles most bounce; this is a small safety guard.
         var now = DateTimeOffset.UtcNow;
@@ -149,12 +167,75 @@ public class MeadowApp : App<F7FeatherV2>
             lastFeedButtonPressedAt = now;
         }
 
+        if (!isSystemReady)
+        {
+            Logger.Info(Tag, "Feed button ignored because system is not ready yet.");
+            return;
+        }
+
         feedingManager.OnFeedButtonPressed();
     }
 
     void OnIndicatorStateChanged(FeedingIndicatorState state)
     {
+        Logger.Info(Tag, $"Updating feeding indicator LEDs: Day {(state.DayLedOn ? "ON" : "off")}, Night {(state.NightLedOn ? "ON" : "off")}");
+
         dayFeedingLed.State = state.DayLedOn;
         nightFeedingLed.State = state.NightLedOn;
+    }
+
+    async Task MaintainConnectivityAndPlatformStateAsync(CancellationToken cancellationToken)
+    {
+        var blinkOn = false;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await wifiManager.EnsureConnectedAsync();
+
+                var hasUsableNetwork = wifiManager.IsConnected && wifiManager.CurrentIpAddress != null;
+                if (!hasUsableNetwork)
+                {
+                    if (isSystemReady)
+                    {
+                        isSystemReady = false;
+                        Logger.Warn(Tag, "Network connectivity lost. Returning platform LED to blinking state.");
+                    }
+
+                    blinkOn = !blinkOn;
+                    platformLed.SetColor(blinkOn ? Color.Blue : Color.Black);
+                    externalPlatformLed.State = blinkOn;
+                    await Task.Delay(PlatformRecoveryBlinkInterval, cancellationToken);
+                    continue;
+                }
+
+                if (!webServerManager.IsStarted)
+                {
+                    Logger.Warn(Tag, "Web server is not running while network is available. Attempting restart.");
+                    _ = Task.Run(webServerManager.StartAsync, cancellationToken);
+                }
+
+                if (!isSystemReady)
+                {
+                    await platformLed.StopAnimation();
+                    platformLed.SetColor(Color.Green);
+                    externalPlatformLed.State = true;
+                    isSystemReady = true;
+                    Logger.Info(Tag, "Network connectivity restored. Platform LED set back to solid ready state.");
+                }
+
+                await Task.Delay(ConnectivityCheckInterval, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn(Tag, $"Connectivity monitor iteration failed: {ex.Message}");
+                await Task.Delay(ConnectivityCheckInterval, cancellationToken);
+            }
+        }
     }
 }

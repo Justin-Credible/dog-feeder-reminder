@@ -9,6 +9,18 @@ Logging:
         # Trace, Debug, Information, Warning, or Error
         Default: Information
 
+DogFeeder:
+    # Local schedule offset from UTC used for feeding window evaluation.
+    # Example: -8 (Pacific Standard), -7 (Pacific Daylight), -5 (Eastern Standard)
+    FeedingScheduleUtcOffsetHours: -7
+
+    # Feeding windows in local time as fractional hour values.
+    # Example: 6.5 = 6:30am, 21.25 = 9:15pm
+    MorningWindowStartHour: 6
+    MorningWindowEndHour: 11
+    EveningWindowStartHour: 18
+    EveningWindowEndHour: 24
+
 # MeadowCloud:
     # Enable Logging, Events, Command + Control
     # Enabled: false

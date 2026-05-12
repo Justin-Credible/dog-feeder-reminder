@@ -5,10 +5,14 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Deploy",
+            "name": "Deploy and Attach (COM4)",
             "type": "meadow",
             "request": "launch",
-            "preLaunchTask": "meadow: Build"
+            "preLaunchTask": "meadow: Build",
+            "deviceInfo": {
+                "name": "COM4",
+                "serial": "COM4"
+            }
         }
     ]
 }

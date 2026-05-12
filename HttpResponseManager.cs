@@ -11,6 +11,8 @@ public class MainPageResponseOptions
     public string FormToken { get; set; }
     public string FeedingStateText { get; set; }
     public string IndicatorStateText { get; set; }
+    public string MorningWindowLabel { get; set; }
+    public string EveningWindowLabel { get; set; }
     public FeedingStatusSnapshot FeedingStatus { get; set; }
     public string WiFiConnectionState { get; set; }
     public string IpText { get; set; }
@@ -52,6 +54,8 @@ public class HttpResponseManager
         var normalizedNoticeLevel = string.Equals(options.NoticeLevel, "error", StringComparison.OrdinalIgnoreCase)
             ? "error"
             : (string.Equals(options.NoticeLevel, "success", StringComparison.OrdinalIgnoreCase) ? "success" : "info");
+        var morningWindowLabel = string.IsNullOrWhiteSpace(options.MorningWindowLabel) ? "morning" : WebUtility.HtmlEncode(options.MorningWindowLabel);
+        var eveningWindowLabel = string.IsNullOrWhiteSpace(options.EveningWindowLabel) ? "evening" : WebUtility.HtmlEncode(options.EveningWindowLabel);
 
         var html = new StringBuilder();
         html.AppendLine("<!DOCTYPE html>");
@@ -102,8 +106,8 @@ public class HttpResponseManager
         html.AppendLine("            <div class=\"grid\">");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Feeding Status</span><div class=\"value\">{options.FeedingStateText}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Indicator LEDs</span><div class=\"value\">{options.IndicatorStateText}</div></div>");
-        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Morning Feeding (7-9am)</span><div class=\"value\">{FormatFeedingStatus(options.FeedingStatus.MorningFed, options.FeedingStatus.InMorningWindow, options.FeedingStatus.MorningWindowMissed)}</div><div class=\"subvalue\">Fed: {FormatBoolean(options.FeedingStatus.MorningFed)} | Window Active: {FormatBoolean(options.FeedingStatus.InMorningWindow)}</div></div>");
-        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Evening Feeding (6-9pm)</span><div class=\"value\">{FormatFeedingStatus(options.FeedingStatus.EveningFed, options.FeedingStatus.InEveningWindow, options.FeedingStatus.EveningWindowMissed)}</div><div class=\"subvalue\">Fed: {FormatBoolean(options.FeedingStatus.EveningFed)} | Window Active: {FormatBoolean(options.FeedingStatus.InEveningWindow)}</div></div>");
+        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Morning Feeding ({morningWindowLabel})</span><div class=\"value\">{FormatFeedingStatus(options.FeedingStatus.MorningFed, options.FeedingStatus.InMorningWindow, options.FeedingStatus.MorningWindowMissed)}</div><div class=\"subvalue\">Fed: {FormatBoolean(options.FeedingStatus.MorningFed)} | Window Active: {FormatBoolean(options.FeedingStatus.InMorningWindow)}</div></div>");
+        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Evening Feeding ({eveningWindowLabel})</span><div class=\"value\">{FormatFeedingStatus(options.FeedingStatus.EveningFed, options.FeedingStatus.InEveningWindow, options.FeedingStatus.EveningWindowMissed)}</div><div class=\"subvalue\">Fed: {FormatBoolean(options.FeedingStatus.EveningFed)} | Window Active: {FormatBoolean(options.FeedingStatus.InEveningWindow)}</div></div>");
         html.AppendLine("            </div>");
         html.AppendLine("            <div class=\"actions\">");
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"slot\" value=\"morning\" /><button class=\"button-primary\" type=\"submit\">Mark Morning Fed</button></form>");

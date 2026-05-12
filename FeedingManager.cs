@@ -57,19 +57,45 @@ public readonly struct FeedingStatusSnapshot
     }
 }
 
+public readonly struct FeedingScheduleConfiguration
+{
+    public TimeSpan MorningWindowStart { get; }
+    public TimeSpan MorningWindowEnd { get; }
+    public TimeSpan EveningWindowStart { get; }
+    public TimeSpan EveningWindowEnd { get; }
+
+    public FeedingScheduleConfiguration(
+        TimeSpan morningWindowStart,
+        TimeSpan morningWindowEnd,
+        TimeSpan eveningWindowStart,
+        TimeSpan eveningWindowEnd)
+    {
+        MorningWindowStart = morningWindowStart;
+        MorningWindowEnd = morningWindowEnd;
+        EveningWindowStart = eveningWindowStart;
+        EveningWindowEnd = eveningWindowEnd;
+    }
+
+    public static FeedingScheduleConfiguration Default => new FeedingScheduleConfiguration(
+        TimeSpan.FromHours(6),
+        TimeSpan.FromHours(11),
+        TimeSpan.FromHours(18),
+        TimeSpan.FromHours(24));
+}
+
 public class FeedingManager
 {
     const string Tag = "FeedingManager";
 
-    static readonly TimeSpan MorningWindowStart = TimeSpan.FromHours(7);
-    static readonly TimeSpan MorningWindowEnd = TimeSpan.FromHours(9);
-    static readonly TimeSpan EveningWindowStart = TimeSpan.FromHours(18);
-    static readonly TimeSpan EveningWindowEnd = TimeSpan.FromHours(21);
     static readonly TimeSpan DailyResetTime = TimeSpan.FromHours(4);
 
     readonly object gate = new object();
     readonly PushNotificationManager pushNotificationManager;
     readonly Func<DateTime> nowProvider;
+    readonly TimeSpan morningWindowStart;
+    readonly TimeSpan morningWindowEnd;
+    readonly TimeSpan eveningWindowStart;
+    readonly TimeSpan eveningWindowEnd;
 
     bool morningFed;
     bool eveningFed;
@@ -110,10 +136,23 @@ public class FeedingManager
     public string IndicatorStateText =>
         $"Day {(CurrentIndicatorState.DayLedOn ? "On" : "Off")}, Night {(CurrentIndicatorState.NightLedOn ? "On" : "Off")}";
 
-    public FeedingManager(PushNotificationManager pushNotificationManager, Func<DateTime> nowProvider = null)
+    public string MorningWindowLabel => FormatWindowLabel(morningWindowStart, morningWindowEnd);
+
+    public string EveningWindowLabel => FormatWindowLabel(eveningWindowStart, eveningWindowEnd);
+
+    public FeedingManager(
+        PushNotificationManager pushNotificationManager,
+        FeedingScheduleConfiguration? scheduleConfiguration = null,
+        Func<DateTime> nowProvider = null)
     {
         this.pushNotificationManager = pushNotificationManager;
         this.nowProvider = nowProvider ?? (() => DateTime.Now);
+
+        var schedule = scheduleConfiguration ?? FeedingScheduleConfiguration.Default;
+        morningWindowStart = schedule.MorningWindowStart;
+        morningWindowEnd = schedule.MorningWindowEnd;
+        eveningWindowStart = schedule.EveningWindowStart;
+        eveningWindowEnd = schedule.EveningWindowEnd;
 
         InitializeResetState(this.nowProvider());
         CurrentIndicatorState = ComputeIndicatorState(this.nowProvider());
@@ -123,11 +162,22 @@ public class FeedingManager
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var now = nowProvider();
+            try
+            {
+                var now = nowProvider();
 
-            ApplyDailyResetIfNeeded(now);
-            await SendMissedFeedingNotificationsIfNeededAsync(now);
-            PublishIndicatorStateIfChanged(now);
+                ApplyDailyResetIfNeeded(now);
+                PublishIndicatorStateIfChanged(now);
+                await SendMissedFeedingNotificationsIfNeededAsync(now);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(Tag, $"Monitoring loop iteration failed: {ex.Message}");
+            }
 
             await Task.Delay(1000, cancellationToken);
         }
@@ -205,10 +255,10 @@ public class FeedingManager
             localEveningFed = eveningFed;
         }
 
-        var inMorningWindow = IsWithinWindow(now.TimeOfDay, MorningWindowStart, MorningWindowEnd);
-        var inEveningWindow = IsWithinWindow(now.TimeOfDay, EveningWindowStart, EveningWindowEnd);
-        var morningWindowMissed = !localMorningFed && now.TimeOfDay >= MorningWindowEnd;
-        var eveningWindowMissed = !localEveningFed && now.TimeOfDay >= EveningWindowEnd;
+        var inMorningWindow = IsWithinWindow(now.TimeOfDay, morningWindowStart, morningWindowEnd);
+        var inEveningWindow = IsWithinWindow(now.TimeOfDay, eveningWindowStart, eveningWindowEnd);
+        var morningWindowMissed = !localMorningFed && now.TimeOfDay >= morningWindowEnd;
+        var eveningWindowMissed = !localEveningFed && now.TimeOfDay >= eveningWindowEnd;
 
         return new FeedingStatusSnapshot(
             localMorningFed,
@@ -261,13 +311,13 @@ public class FeedingManager
 
         lock (gate)
         {
-            if (!morningFed && !morningMissedNotificationSent && now.TimeOfDay >= MorningWindowEnd)
+            if (!morningFed && !morningMissedNotificationSent && now.TimeOfDay >= morningWindowEnd)
             {
                 morningMissedNotificationSent = true;
                 sendMorning = true;
             }
 
-            if (!eveningFed && !eveningMissedNotificationSent && now.TimeOfDay >= EveningWindowEnd)
+            if (!eveningFed && !eveningMissedNotificationSent && now.TimeOfDay >= eveningWindowEnd)
             {
                 eveningMissedNotificationSent = true;
                 sendEvening = true;
@@ -309,8 +359,8 @@ public class FeedingManager
         }
 
         var blinkOn = now.Second % 2 == 0;
-        var inMorningWindow = IsWithinWindow(now.TimeOfDay, MorningWindowStart, MorningWindowEnd);
-        var inEveningWindow = IsWithinWindow(now.TimeOfDay, EveningWindowStart, EveningWindowEnd);
+        var inMorningWindow = IsWithinWindow(now.TimeOfDay, morningWindowStart, morningWindowEnd);
+        var inEveningWindow = IsWithinWindow(now.TimeOfDay, eveningWindowStart, eveningWindowEnd);
 
         var dayLedOn = localMorningFed || (!localMorningFed && inMorningWindow && blinkOn);
         var nightLedOn = localEveningFed || (!localEveningFed && inEveningWindow && blinkOn);
@@ -321,5 +371,34 @@ public class FeedingManager
     static bool IsWithinWindow(TimeSpan current, TimeSpan start, TimeSpan end)
     {
         return current >= start && current < end;
+    }
+
+    static string FormatWindowLabel(TimeSpan start, TimeSpan end)
+    {
+        return $"{FormatTimeLabel(start)}-{FormatTimeLabel(end)}";
+    }
+
+    static string FormatTimeLabel(TimeSpan value)
+    {
+        if (value == TimeSpan.FromHours(24))
+        {
+            return "12am";
+        }
+
+        var totalHours = ((int)value.TotalHours) % 24;
+        var minutes = value.Minutes;
+        var meridiem = totalHours < 12 ? "am" : "pm";
+        var hour12 = totalHours % 12;
+        if (hour12 == 0)
+        {
+            hour12 = 12;
+        }
+
+        if (minutes == 0)
+        {
+            return $"{hour12}{meridiem}";
+        }
+
+        return $"{hour12}:{minutes:00}{meridiem}";
     }
 }
