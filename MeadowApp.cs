@@ -229,12 +229,6 @@ public class MeadowApp : App<F7FeatherV2>
             lastFeedButtonPressedAt = now;
         }
 
-        if (!isSystemReady)
-        {
-            Logger.Info(Tag, "Feed button ignored because system is not ready yet.");
-            return;
-        }
-
         feedingManager.OnFeedButtonPressed();
     }
 
