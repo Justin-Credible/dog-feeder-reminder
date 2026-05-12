@@ -17,9 +17,9 @@ DogFeeder:
     # Feeding windows in local time as fractional hour values.
     # Example: 6.5 = 6:30am, 21.25 = 9:15pm
     MorningWindowStartHour: 6
-    MorningWindowEndHour: 11
-    EveningWindowStartHour: 18
-    EveningWindowEndHour: 24
+    MorningWindowEndHour: 8.5
+    EveningWindowStartHour: 19
+    EveningWindowEndHour: 22
 
     # Pushover.net notification settings.
     PushoverApiToken:
