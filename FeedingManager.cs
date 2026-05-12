@@ -66,35 +66,38 @@ public readonly struct FeedingScheduleConfiguration
     public TimeSpan MorningWindowEnd { get; }
     public TimeSpan EveningWindowStart { get; }
     public TimeSpan EveningWindowEnd { get; }
+    public TimeSpan DailyResetTime { get; }
 
     public FeedingScheduleConfiguration(
         TimeSpan morningWindowStart,
         TimeSpan morningWindowEnd,
         TimeSpan eveningWindowStart,
-        TimeSpan eveningWindowEnd)
+        TimeSpan eveningWindowEnd,
+        TimeSpan dailyResetTime = default)
     {
         MorningWindowStart = morningWindowStart;
         MorningWindowEnd = morningWindowEnd;
         EveningWindowStart = eveningWindowStart;
         EveningWindowEnd = eveningWindowEnd;
+        DailyResetTime = dailyResetTime == default ? TimeSpan.FromHours(4) : dailyResetTime;
     }
 
     public static FeedingScheduleConfiguration Default => new FeedingScheduleConfiguration(
         TimeSpan.FromHours(6),
         TimeSpan.FromHours(11),
         TimeSpan.FromHours(18),
-        TimeSpan.FromHours(24));
+        TimeSpan.FromHours(24),
+        TimeSpan.FromHours(4));
 }
 
 public class FeedingManager
 {
     const string Tag = "FeedingManager";
 
-    static readonly TimeSpan DailyResetTime = TimeSpan.FromHours(4);
-
     readonly object gate = new object();
     readonly PushNotificationManager pushNotificationManager;
     readonly Func<DateTime> nowProvider;
+    readonly TimeSpan dailyResetTime;
     readonly TimeSpan morningWindowStart;
     readonly TimeSpan morningWindowEnd;
     readonly TimeSpan eveningWindowStart;
@@ -168,6 +171,7 @@ public class FeedingManager
         morningWindowEnd = schedule.MorningWindowEnd;
         eveningWindowStart = schedule.EveningWindowStart;
         eveningWindowEnd = schedule.EveningWindowEnd;
+        dailyResetTime = schedule.DailyResetTime;
 
         InitializeResetState(this.nowProvider());
         CurrentIndicatorState = ComputeIndicatorState(this.nowProvider());
@@ -309,7 +313,7 @@ public class FeedingManager
     {
         lock (gate)
         {
-            lastResetDate = now.TimeOfDay >= DailyResetTime ? now.Date : now.Date.AddDays(-1);
+            lastResetDate = now.TimeOfDay >= dailyResetTime ? now.Date : now.Date.AddDays(-1);
             morningFed = false;
             eveningFed = false;
             vacationModeEnabled = false;
@@ -326,7 +330,7 @@ public class FeedingManager
     {
         lock (gate)
         {
-            if (now.TimeOfDay < DailyResetTime)
+            if (now.TimeOfDay < dailyResetTime)
             {
                 return;
             }
@@ -341,7 +345,7 @@ public class FeedingManager
             morningMissedNotificationSent = false;
             eveningMissedNotificationSent = false;
             lastResetDate = now.Date;
-            Logger.Info(Tag, "Daily feeding state reset at 4am window.");
+            Logger.Info(Tag, $"Daily feeding state reset at {FormatTimeLabel(dailyResetTime)} window.");
         }
     }
 

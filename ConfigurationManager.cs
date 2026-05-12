@@ -54,6 +54,7 @@ public static class ConfigurationManager
     const string MorningEndHoursKey = "MorningWindowEndHour";
     const string EveningStartHoursKey = "EveningWindowStartHour";
     const string EveningEndHoursKey = "EveningWindowEndHour";
+    const string DailyResetTimeHoursKey = "DailyResetTimeHour";
     const string PushoverApiTokenKey = "PushoverApiToken";
     const string PushoverUserKey = "PushoverUserKey";
     const string PushoverAppNameKey = "PushoverAppName";
@@ -70,6 +71,7 @@ public static class ConfigurationManager
         var morningEndHours = GetDouble(settings, MorningEndHoursKey, fallbackSchedule.MorningWindowEnd.TotalHours);
         var eveningStartHours = GetDouble(settings, EveningStartHoursKey, fallbackSchedule.EveningWindowStart.TotalHours);
         var eveningEndHours = GetDouble(settings, EveningEndHoursKey, fallbackSchedule.EveningWindowEnd.TotalHours);
+        var dailyResetHours = GetDouble(settings, DailyResetTimeHoursKey, fallbackSchedule.DailyResetTime.TotalHours);
         var pushoverApiToken = GetString(settings, PushoverApiTokenKey, string.Empty);
         var pushoverUserKey = GetString(settings, PushoverUserKey, string.Empty);
         var pushoverAppName = GetString(settings, PushoverAppNameKey, "Dog Feeder Reminder");
@@ -81,7 +83,8 @@ public static class ConfigurationManager
                 TimeSpan.FromHours(morningStartHours),
                 TimeSpan.FromHours(morningEndHours),
                 TimeSpan.FromHours(eveningStartHours),
-                TimeSpan.FromHours(eveningEndHours)),
+                TimeSpan.FromHours(eveningEndHours),
+                TimeSpan.FromHours(dailyResetHours)),
             new PushoverConfiguration(pushoverApiToken, pushoverUserKey, pushoverAppName),
             pushoverTestEnabled);
 
@@ -89,6 +92,7 @@ public static class ConfigurationManager
             $"Loaded config: utcOffset={offsetHours:0.##}, " +
             $"morning={morningStartHours:0.##}-{morningEndHours:0.##}, " +
             $"evening={eveningStartHours:0.##}-{eveningEndHours:0.##}, " +
+            $"dailyReset={dailyResetHours:0.##}, " +
             $"pushoverConfigured={configuration.Pushover.IsConfigured}, " +
             $"pushoverTestEnabled={configuration.PushoverTestEnabled}");
 

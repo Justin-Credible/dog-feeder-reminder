@@ -21,6 +21,10 @@ DogFeeder:
     EveningWindowStartHour: 19
     EveningWindowEndHour: 22
 
+    # Daily reset time in local time (hour when feeding state resets).
+    # Example: 4 = 4:00am
+    DailyResetTimeHour: 4
+
     # Pushover.net notification settings.
     PushoverApiToken:
     PushoverUserKey:
