@@ -11,6 +11,7 @@ namespace dog_feeder_reminder;
 public class WebServerManager
 {
     const string Tag = "WebServerManager";
+    const string FlashNoticeCookieName = "dogfeeder_flash";
     readonly WiFiManager wifiManager;
     readonly DeviceTimeManager deviceTimeManager;
     readonly FeedingManager feedingManager;
@@ -27,7 +28,23 @@ public class WebServerManager
     readonly TaskCompletionSource<bool> webServerReadySource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly object tokenGate = new object();
     readonly Dictionary<string, DateTimeOffset> activeFormTokens = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+    readonly Dictionary<string, FlashNoticeEntry> activeFlashNotices = new Dictionary<string, FlashNoticeEntry>(StringComparer.Ordinal);
     static readonly TimeSpan FormTokenLifetime = TimeSpan.FromMinutes(5);
+    static readonly TimeSpan FlashNoticeLifetime = TimeSpan.FromMinutes(2);
+
+    readonly struct FlashNoticeEntry
+    {
+        public FlashNoticeEntry(string notice, string level, DateTimeOffset issuedAt)
+        {
+            Notice = notice;
+            Level = level;
+            IssuedAt = issuedAt;
+        }
+
+        public string Notice { get; }
+        public string Level { get; }
+        public DateTimeOffset IssuedAt { get; }
+    }
 
     public bool IsStarted => webServerStarted;
 
@@ -162,6 +179,12 @@ public class WebServerManager
             return;
         }
 
+        if (absolutePath.Equals("/vacation/toggle", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleVacationToggleRequestAsync(request, response);
+            return;
+        }
+
         if (absolutePath.Equals("/api/pushover/test", StringComparison.OrdinalIgnoreCase))
         {
             await HandlePushoverTestRequestAsync(request, response);
@@ -185,8 +208,9 @@ public class WebServerManager
         else if (absolutePath.Equals("/", StringComparison.OrdinalIgnoreCase))
         {
             contentType = "text/html";
-            var notice = request.QueryString["notice"];
-            var level = request.QueryString["level"];
+            var flashNotice = TryConsumeFlashNotice(request, response);
+            var notice = flashNotice?.Notice;
+            var level = flashNotice?.Level;
             body = BuildMainPageResponse(notice, level);
         }
         else
@@ -265,10 +289,47 @@ public class WebServerManager
         response.Close();
     }
 
-    static void RedirectToNotice(HttpListenerResponse response, string notice, string level)
+    async Task HandleVacationToggleRequestAsync(HttpListenerRequest request, HttpListenerResponse response)
     {
+        if (!request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
+            response.ContentType = "text/plain";
+            byte[] methodError = Encoding.UTF8.GetBytes("Method Not Allowed");
+            response.ContentLength64 = methodError.LongLength;
+            await response.OutputStream.WriteAsync(methodError, 0, methodError.Length);
+            response.Close();
+            return;
+        }
+
+        var formValues = await ReadFormDataAsync(request);
+        var formToken = formValues.TryGetValue("formToken", out var formTokenValue) ? formTokenValue : string.Empty;
+
+        if (!TryConsumeFormToken(formToken))
+        {
+            RedirectToNotice(response, "Duplicate or invalid form submission. Please refresh and try again.", "error");
+            response.Close();
+            return;
+        }
+
+        feedingManager.ToggleVacationMode();
+        var vacationEnabled = feedingManager.IsVacationModeEnabled;
+        var notice = vacationEnabled ? "Vacation mode enabled." : "Vacation mode disabled.";
+        RedirectToNotice(response, notice, "success");
+        response.Close();
+    }
+
+    void RedirectToNotice(HttpListenerResponse response, string notice, string level)
+    {
+        var flashToken = IssueFlashNotice(notice, level);
+        var cookie = new Cookie(FlashNoticeCookieName, flashToken, "/")
+        {
+            HttpOnly = true
+        };
+
+        response.Cookies.Add(cookie);
         response.StatusCode = (int)HttpStatusCode.Redirect;
-        response.RedirectLocation = $"/?notice={WebUtility.UrlEncode(notice)}&level={WebUtility.UrlEncode(level)}";
+        response.RedirectLocation = "/";
     }
 
     static async Task<Dictionary<string, string>> ReadFormDataAsync(HttpListenerRequest request)
@@ -341,6 +402,7 @@ public class WebServerManager
             PushoverConfigured = pushoverConfiguration.IsConfigured,
             PushoverAppName = pushoverConfiguration.AppName,
             PushoverTestEnabled = pushoverTestEnabled,
+            VacationModeEnabled = feedingStatus.VacationModeEnabled,
         });
     }
 
@@ -367,6 +429,7 @@ public class WebServerManager
             PushoverConfigured = pushoverConfiguration.IsConfigured,
             PushoverAppName = pushoverConfiguration.AppName,
             PushoverTestEnabled = pushoverTestEnabled,
+            VacationModeEnabled = feedingStatus.VacationModeEnabled,
         });
     }
 
@@ -478,6 +541,77 @@ public class WebServerManager
         foreach (var key in keysToRemove)
         {
             activeFormTokens.Remove(key);
+        }
+    }
+
+    string IssueFlashNotice(string notice, string level)
+    {
+        var safeNotice = notice ?? string.Empty;
+        var normalizedLevel = string.Equals(level, "error", StringComparison.OrdinalIgnoreCase)
+            ? "error"
+            : (string.Equals(level, "success", StringComparison.OrdinalIgnoreCase) ? "success" : "info");
+
+        lock (tokenGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            PruneExpiredFlashNoticesLocked(now);
+            var token = Guid.NewGuid().ToString("N");
+            activeFlashNotices[token] = new FlashNoticeEntry(safeNotice, normalizedLevel, now);
+            return token;
+        }
+    }
+
+    FlashNoticeEntry? TryConsumeFlashNotice(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        var cookie = request.Cookies[FlashNoticeCookieName];
+        if (cookie == null || string.IsNullOrWhiteSpace(cookie.Value))
+        {
+            return null;
+        }
+
+        // Always expire the client cookie after one read attempt.
+        response.Cookies.Add(new Cookie(FlashNoticeCookieName, string.Empty, "/")
+        {
+            Expires = DateTime.UtcNow.AddDays(-1),
+            HttpOnly = true
+        });
+
+        lock (tokenGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            PruneExpiredFlashNoticesLocked(now);
+
+            if (!activeFlashNotices.TryGetValue(cookie.Value, out var entry))
+            {
+                return null;
+            }
+
+            if (now - entry.IssuedAt > FlashNoticeLifetime)
+            {
+                activeFlashNotices.Remove(cookie.Value);
+                return null;
+            }
+
+            activeFlashNotices.Remove(cookie.Value);
+            return entry;
+        }
+    }
+
+    void PruneExpiredFlashNoticesLocked(DateTimeOffset now)
+    {
+        var keysToRemove = new List<string>();
+
+        foreach (var item in activeFlashNotices)
+        {
+            if (now - item.Value.IssuedAt > FlashNoticeLifetime)
+            {
+                keysToRemove.Add(item.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            activeFlashNotices.Remove(key);
         }
     }
 

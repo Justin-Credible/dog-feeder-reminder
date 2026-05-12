@@ -22,6 +22,7 @@ public class MainPageResponseOptions
     public bool PushoverConfigured { get; set; }
     public string PushoverAppName { get; set; }
     public bool PushoverTestEnabled { get; set; }
+    public bool VacationModeEnabled { get; set; }
 }
 
 public class DiagnosticsJsonOptions
@@ -39,6 +40,7 @@ public class DiagnosticsJsonOptions
     public bool PushoverConfigured { get; set; }
     public string PushoverAppName { get; set; }
     public bool PushoverTestEnabled { get; set; }
+    public bool VacationModeEnabled { get; set; }
 }
 
 public class FeedingsJsonOptions
@@ -114,12 +116,14 @@ public class HttpResponseManager
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Indicator LEDs</span><div class=\"value\">{options.IndicatorStateText}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Morning Feeding ({morningWindowLabel})</span><div class=\"value\">{FormatFeedingStatus(options.FeedingStatus.MorningFed, options.FeedingStatus.InMorningWindow, options.FeedingStatus.MorningWindowMissed)}</div><div class=\"subvalue\">Fed: {FormatBoolean(options.FeedingStatus.MorningFed)} | Window Active: {FormatBoolean(options.FeedingStatus.InMorningWindow)}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Evening Feeding ({eveningWindowLabel})</span><div class=\"value\">{FormatFeedingStatus(options.FeedingStatus.EveningFed, options.FeedingStatus.InEveningWindow, options.FeedingStatus.EveningWindowMissed)}</div><div class=\"subvalue\">Fed: {FormatBoolean(options.FeedingStatus.EveningFed)} | Window Active: {FormatBoolean(options.FeedingStatus.InEveningWindow)}</div></div>");
+        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Vacation Mode</span><div class=\"value\">{FormatBoolean(options.VacationModeEnabled)}</div></div>");
         html.AppendLine("            </div>");
         html.AppendLine("            <div class=\"actions\">");
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"slot\" value=\"morning\" /><button class=\"button-primary\" type=\"submit\">Mark Morning Fed</button></form>");
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"slot\" value=\"evening\" /><button class=\"button-primary\" type=\"submit\">Mark Evening Fed</button></form>");
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"slot\" value=\"both\" /><button type=\"submit\">Mark Both Fed</button></form>");
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"action\" value=\"reset\" /><button type=\"submit\">Reset Feedings</button></form>");
+        html.AppendLine($"                <form method=\"post\" action=\"/vacation/toggle\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><button type=\"submit\">{(options.VacationModeEnabled ? "Disable Vacation Mode" : "Enable Vacation Mode")}</button></form>");
         if (options.PushoverTestEnabled)
         {
             html.AppendLine($"                <form method=\"post\" action=\"/api/pushover/test\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><button type=\"submit\">Send Test Push</button></form>");
@@ -175,6 +179,7 @@ public class HttpResponseManager
                $"\"pushoverConfigured\":{options.PushoverConfigured.ToString().ToLowerInvariant()}," +
                $"\"pushoverAppName\":\"{EscapeJson(options.PushoverAppName)}\"," +
                $"\"pushoverTestEnabled\":{options.PushoverTestEnabled.ToString().ToLowerInvariant()}," +
+               $"\"vacationModeEnabled\":{options.VacationModeEnabled.ToString().ToLowerInvariant()}," +
                $"\"morningFed\":{options.FeedingStatus.MorningFed.ToString().ToLowerInvariant()}," +
                $"\"eveningFed\":{options.FeedingStatus.EveningFed.ToString().ToLowerInvariant()}," +
                $"\"inMorningWindow\":{options.FeedingStatus.InMorningWindow.ToString().ToLowerInvariant()}," +

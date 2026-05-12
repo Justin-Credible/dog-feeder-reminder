@@ -39,6 +39,7 @@ public readonly struct FeedingStatusSnapshot
     public bool InEveningWindow { get; }
     public bool MorningWindowMissed { get; }
     public bool EveningWindowMissed { get; }
+    public bool VacationModeEnabled { get; }
 
     public FeedingStatusSnapshot(
         bool morningFed,
@@ -46,7 +47,8 @@ public readonly struct FeedingStatusSnapshot
         bool inMorningWindow,
         bool inEveningWindow,
         bool morningWindowMissed,
-        bool eveningWindowMissed)
+        bool eveningWindowMissed,
+        bool vacationModeEnabled)
     {
         MorningFed = morningFed;
         EveningFed = eveningFed;
@@ -54,6 +56,7 @@ public readonly struct FeedingStatusSnapshot
         InEveningWindow = inEveningWindow;
         MorningWindowMissed = morningWindowMissed;
         EveningWindowMissed = eveningWindowMissed;
+        VacationModeEnabled = vacationModeEnabled;
     }
 }
 
@@ -101,6 +104,7 @@ public class FeedingManager
     bool eveningFed;
     bool morningMissedNotificationSent;
     bool eveningMissedNotificationSent;
+    bool vacationModeEnabled;
     DateTime lastResetDate;
 
     public event Action<FeedingIndicatorState> IndicatorStateChanged;
@@ -135,6 +139,17 @@ public class FeedingManager
 
     public string IndicatorStateText =>
         $"Day {(CurrentIndicatorState.DayLedOn ? "On" : "Off")}, Night {(CurrentIndicatorState.NightLedOn ? "On" : "Off")}";
+
+    public bool IsVacationModeEnabled
+    {
+        get
+        {
+            lock (gate)
+            {
+                return vacationModeEnabled;
+            }
+        }
+    }
 
     public string MorningWindowLabel => FormatWindowLabel(morningWindowStart, morningWindowEnd);
 
@@ -241,6 +256,24 @@ public class FeedingManager
         PublishIndicatorStateIfChanged(nowProvider(), forcePublish: true);
     }
 
+    public void ToggleVacationMode()
+    {
+        var now = nowProvider();
+        lock (gate)
+        {
+            vacationModeEnabled = !vacationModeEnabled;
+            if (vacationModeEnabled)
+            {
+                // Prevent immediate catch-up pushes when entering vacation mode.
+                morningMissedNotificationSent = true;
+                eveningMissedNotificationSent = true;
+            }
+        }
+
+        Logger.Info(Tag, $"Vacation mode {(IsVacationModeEnabled ? "enabled" : "disabled")}." );
+        PublishIndicatorStateIfChanged(now, forcePublish: true);
+    }
+
     public FeedingStatusSnapshot GetStatusSnapshot()
     {
         var now = nowProvider();
@@ -248,11 +281,13 @@ public class FeedingManager
 
         bool localMorningFed;
         bool localEveningFed;
+        bool localVacationModeEnabled;
 
         lock (gate)
         {
             localMorningFed = morningFed;
             localEveningFed = eveningFed;
+            localVacationModeEnabled = vacationModeEnabled;
         }
 
         var inMorningWindow = IsWithinWindow(now.TimeOfDay, morningWindowStart, morningWindowEnd);
@@ -266,7 +301,8 @@ public class FeedingManager
             inMorningWindow,
             inEveningWindow,
             morningWindowMissed,
-            eveningWindowMissed);
+            eveningWindowMissed,
+            localVacationModeEnabled);
     }
 
     void InitializeResetState(DateTime now)
@@ -276,8 +312,13 @@ public class FeedingManager
             lastResetDate = now.TimeOfDay >= DailyResetTime ? now.Date : now.Date.AddDays(-1);
             morningFed = false;
             eveningFed = false;
-            morningMissedNotificationSent = false;
-            eveningMissedNotificationSent = false;
+            vacationModeEnabled = false;
+
+            // Avoid backfilling missed-window pushes immediately on cold boot.
+            // If the app starts after a window already ended, consider that window's
+            // missed-notification already accounted for until the next daily reset.
+            morningMissedNotificationSent = now.TimeOfDay >= morningWindowEnd;
+            eveningMissedNotificationSent = now.TimeOfDay >= eveningWindowEnd;
         }
     }
 
@@ -308,19 +349,22 @@ public class FeedingManager
     {
         bool sendMorning = false;
         bool sendEvening = false;
+        bool localVacationModeEnabled;
 
         lock (gate)
         {
+            localVacationModeEnabled = vacationModeEnabled;
+
             if (!morningFed && !morningMissedNotificationSent && now.TimeOfDay >= morningWindowEnd)
             {
                 morningMissedNotificationSent = true;
-                sendMorning = true;
+                sendMorning = !localVacationModeEnabled;
             }
 
             if (!eveningFed && !eveningMissedNotificationSent && now.TimeOfDay >= eveningWindowEnd)
             {
                 eveningMissedNotificationSent = true;
-                sendEvening = true;
+                sendEvening = !localVacationModeEnabled;
             }
         }
 
@@ -351,11 +395,18 @@ public class FeedingManager
     {
         bool localMorningFed;
         bool localEveningFed;
+        bool localVacationModeEnabled;
 
         lock (gate)
         {
             localMorningFed = morningFed;
             localEveningFed = eveningFed;
+            localVacationModeEnabled = vacationModeEnabled;
+        }
+
+        if (localVacationModeEnabled)
+        {
+            return new FeedingIndicatorState(dayLedOn: false, nightLedOn: false);
         }
 
         var blinkOn = now.Second % 2 == 0;
