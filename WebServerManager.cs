@@ -16,6 +16,9 @@ public class WebServerManager
     readonly FeedingManager feedingManager;
     readonly PowerStatusManager powerStatusManager;
     readonly HttpResponseManager responseManager;
+    readonly PushNotificationManager pushNotificationManager;
+    readonly PushoverConfiguration pushoverConfiguration;
+    readonly bool pushoverTestEnabled;
     readonly DateTimeOffset startedAt;
     readonly string deviceName;
 
@@ -33,6 +36,9 @@ public class WebServerManager
         DeviceTimeManager deviceTimeManager,
         FeedingManager feedingManager,
         PowerStatusManager powerStatusManager,
+        PushNotificationManager pushNotificationManager,
+        PushoverConfiguration pushoverConfiguration,
+        bool pushoverTestEnabled,
         DateTimeOffset startedAt,
         string deviceName)
     {
@@ -40,6 +46,9 @@ public class WebServerManager
         this.deviceTimeManager = deviceTimeManager;
         this.feedingManager = feedingManager;
         this.powerStatusManager = powerStatusManager;
+        this.pushNotificationManager = pushNotificationManager;
+        this.pushoverConfiguration = pushoverConfiguration;
+        this.pushoverTestEnabled = pushoverTestEnabled;
         this.responseManager = new HttpResponseManager();
         this.startedAt = startedAt;
         this.deviceName = deviceName;
@@ -150,6 +159,12 @@ public class WebServerManager
         if (absolutePath.Equals("/feedings/mark", StringComparison.OrdinalIgnoreCase))
         {
             await HandleFeedingMarkRequestAsync(request, response);
+            return;
+        }
+
+        if (absolutePath.Equals("/api/pushover/test", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandlePushoverTestRequestAsync(request, response);
             return;
         }
 
@@ -323,6 +338,9 @@ public class WebServerManager
             DeviceTimeText = deviceTimeManager.CurrentDeviceTimeText,
             UptimeText = uptimeText,
             PowerStatus = powerStatus,
+            PushoverConfigured = pushoverConfiguration.IsConfigured,
+            PushoverAppName = pushoverConfiguration.AppName,
+            PushoverTestEnabled = pushoverTestEnabled,
         });
     }
 
@@ -346,7 +364,54 @@ public class WebServerManager
             IndicatorState = feedingManager.IndicatorStateText,
             FeedingStatus = feedingStatus,
             PowerStatus = powerStatus,
+            PushoverConfigured = pushoverConfiguration.IsConfigured,
+            PushoverAppName = pushoverConfiguration.AppName,
+            PushoverTestEnabled = pushoverTestEnabled,
         });
+    }
+
+    async Task HandlePushoverTestRequestAsync(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        if (!pushoverTestEnabled)
+        {
+            response.StatusCode = (int)HttpStatusCode.NotFound;
+            response.ContentType = "text/plain";
+            byte[] body = Encoding.UTF8.GetBytes("Not Found");
+            response.ContentLength64 = body.LongLength;
+            await response.OutputStream.WriteAsync(body, 0, body.Length);
+            response.Close();
+            return;
+        }
+
+        if (!request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
+            response.ContentType = "text/plain";
+            byte[] methodError = Encoding.UTF8.GetBytes("Method Not Allowed");
+            response.ContentLength64 = methodError.LongLength;
+            await response.OutputStream.WriteAsync(methodError, 0, methodError.Length);
+            response.Close();
+            return;
+        }
+
+        var formValues = await ReadFormDataAsync(request);
+        var formToken = formValues.TryGetValue("formToken", out var formTokenValue) ? formTokenValue : string.Empty;
+
+        if (!TryConsumeFormToken(formToken))
+        {
+            RedirectToNotice(response, "Duplicate or invalid form submission. Please refresh and try again.", "error");
+            response.Close();
+            return;
+        }
+
+        var sent = await pushNotificationManager.SendTestNotificationAsync(DateTime.Now);
+        var notice = sent
+            ? $"Test push notification sent at {DateTime.Now:HH:mm:ss}."
+            : "Test push notification could not be sent. Check Pushover configuration.";
+        var level = sent ? "success" : "error";
+
+        RedirectToNotice(response, notice, level);
+        response.Close();
     }
 
     string BuildFeedingsJsonResponse()

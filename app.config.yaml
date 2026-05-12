@@ -21,6 +21,12 @@ DogFeeder:
     EveningWindowStartHour: 18
     EveningWindowEndHour: 24
 
+    # Pushover.net notification settings.
+    PushoverApiToken:
+    PushoverUserKey:
+    PushoverAppName: Dog Feeder Reminder
+    PushoverTest: false
+
 # MeadowCloud:
     # Enable Logging, Events, Command + Control
     # Enabled: false

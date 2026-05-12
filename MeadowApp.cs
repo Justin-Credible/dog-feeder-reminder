@@ -74,7 +74,7 @@ public class MeadowApp : App<F7FeatherV2>
         deviceTimeManager.StartMonitoring();
 
         var configuration = ConfigurationManager.LoadDogFeederConfiguration(Settings);
-        pushNotificationManager = new PushNotificationManager();
+        pushNotificationManager = new PushNotificationManager(configuration.Pushover);
         feedingManager = new FeedingManager(
             pushNotificationManager,
             configuration.FeedingSchedule,
@@ -92,6 +92,9 @@ public class MeadowApp : App<F7FeatherV2>
             deviceTimeManager,
             feedingManager,
             powerStatusManager,
+            pushNotificationManager,
+            configuration.Pushover,
+            configuration.PushoverTestEnabled,
             DateTimeOffset.UtcNow,
             deviceName);
 

@@ -19,6 +19,9 @@ public class MainPageResponseOptions
     public string DeviceTimeText { get; set; }
     public string UptimeText { get; set; }
     public PowerStatusSnapshot PowerStatus { get; set; }
+    public bool PushoverConfigured { get; set; }
+    public string PushoverAppName { get; set; }
+    public bool PushoverTestEnabled { get; set; }
 }
 
 public class DiagnosticsJsonOptions
@@ -33,6 +36,9 @@ public class DiagnosticsJsonOptions
     public string IndicatorState { get; set; }
     public FeedingStatusSnapshot FeedingStatus { get; set; }
     public PowerStatusSnapshot PowerStatus { get; set; }
+    public bool PushoverConfigured { get; set; }
+    public string PushoverAppName { get; set; }
+    public bool PushoverTestEnabled { get; set; }
 }
 
 public class FeedingsJsonOptions
@@ -114,6 +120,10 @@ public class HttpResponseManager
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"slot\" value=\"evening\" /><button class=\"button-primary\" type=\"submit\">Mark Evening Fed</button></form>");
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"slot\" value=\"both\" /><button type=\"submit\">Mark Both Fed</button></form>");
         html.AppendLine($"                <form method=\"post\" action=\"/feedings/mark\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><input type=\"hidden\" name=\"action\" value=\"reset\" /><button type=\"submit\">Reset Feedings</button></form>");
+        if (options.PushoverTestEnabled)
+        {
+            html.AppendLine($"                <form method=\"post\" action=\"/api/pushover/test\"><input type=\"hidden\" name=\"formToken\" value=\"{options.FormToken}\" /><button type=\"submit\">Send Test Push</button></form>");
+        }
         html.AppendLine("            </div>");
         html.AppendLine("        </section>");
         html.AppendLine("        <section class=\"panel\">");
@@ -125,6 +135,8 @@ public class HttpResponseManager
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">IP Address</span><div class=\"value\">{options.IpText}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Device Time</span><div class=\"value\">{options.DeviceTimeText}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Uptime</span><div class=\"value\">{options.UptimeText}</div></div>");
+        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Pushover</span><div class=\"value\">{FormatBoolean(options.PushoverConfigured)}</div><div class=\"subvalue\">App: {WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(options.PushoverAppName) ? "Dog Feeder Reminder" : options.PushoverAppName)}</div></div>");
+        html.AppendLine($"                <div class=\"card\"><span class=\"label\">Pushover Test</span><div class=\"value\">{FormatBoolean(options.PushoverTestEnabled)}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Battery Voltage</span><div class=\"value\">{options.PowerStatus.BatteryVoltageText}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Charge State</span><div class=\"value\">{options.PowerStatus.ChargeStateText}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">Power Source</span><div class=\"value\">{options.PowerStatus.SourceText}</div><div class=\"subvalue\">{options.PowerStatus.Notes}</div></div>");
@@ -160,6 +172,9 @@ public class HttpResponseManager
                $"\"uptime\":\"{EscapeJson(options.Uptime)}\"," +
                $"\"feedingStatus\":\"{EscapeJson(options.FeedingState)}\"," +
                $"\"indicatorState\":\"{EscapeJson(options.IndicatorState)}\"," +
+               $"\"pushoverConfigured\":{options.PushoverConfigured.ToString().ToLowerInvariant()}," +
+               $"\"pushoverAppName\":\"{EscapeJson(options.PushoverAppName)}\"," +
+               $"\"pushoverTestEnabled\":{options.PushoverTestEnabled.ToString().ToLowerInvariant()}," +
                $"\"morningFed\":{options.FeedingStatus.MorningFed.ToString().ToLowerInvariant()}," +
                $"\"eveningFed\":{options.FeedingStatus.EveningFed.ToString().ToLowerInvariant()}," +
                $"\"inMorningWindow\":{options.FeedingStatus.InMorningWindow.ToString().ToLowerInvariant()}," +
