@@ -10,17 +10,20 @@ public readonly struct DogFeederConfiguration
     public FeedingScheduleConfiguration FeedingSchedule { get; }
     public PushoverConfiguration Pushover { get; }
     public bool PushoverTestEnabled { get; }
+    public MqttConfiguration Mqtt { get; }
 
     public DogFeederConfiguration(
         TimeSpan feedingScheduleUtcOffset,
         FeedingScheduleConfiguration feedingSchedule,
         PushoverConfiguration pushover,
-        bool pushoverTestEnabled)
+        bool pushoverTestEnabled,
+        MqttConfiguration mqtt = default)
     {
         FeedingScheduleUtcOffset = feedingScheduleUtcOffset;
         FeedingSchedule = feedingSchedule;
         Pushover = pushover;
         PushoverTestEnabled = pushoverTestEnabled;
+        Mqtt = mqtt;
     }
 }
 
@@ -59,6 +62,12 @@ public static class ConfigurationManager
     const string PushoverUserKey = "PushoverUserKey";
     const string PushoverAppNameKey = "PushoverAppName";
     const string PushoverTestKey = "PushoverTest";
+    const string MqttBrokerHostnameKey = "MqttBrokerHostname";
+    const string MqttBrokerPortKey = "MqttBrokerPort";
+    const string MqttTopicPrefixKey = "MqttTopicPrefix";
+    const string MqttClientIdKey = "MqttClientId";
+    const string MqttUsernameKey = "MqttUsername";
+    const string MqttPasswordKey = "MqttPassword";
 
     static readonly TimeSpan DefaultFeedingScheduleUtcOffset = TimeSpan.FromHours(-7);
 
@@ -76,6 +85,12 @@ public static class ConfigurationManager
         var pushoverUserKey = GetString(settings, PushoverUserKey, string.Empty);
         var pushoverAppName = GetString(settings, PushoverAppNameKey, "Dog Feeder Reminder");
         var pushoverTestEnabled = GetBool(settings, PushoverTestKey, false);
+        var mqttBrokerHostname = GetString(settings, MqttBrokerHostnameKey, string.Empty);
+        var mqttBrokerPort = (int)GetDouble(settings, MqttBrokerPortKey, 1883);
+        var mqttTopicPrefix = GetString(settings, MqttTopicPrefixKey, "dog-feeder");
+        var mqttClientId = GetString(settings, MqttClientIdKey, string.Empty);
+        var mqttUsername = GetString(settings, MqttUsernameKey, string.Empty);
+        var mqttPassword = GetString(settings, MqttPasswordKey, string.Empty);
 
         var configuration = new DogFeederConfiguration(
             TimeSpan.FromHours(offsetHours),
@@ -86,7 +101,14 @@ public static class ConfigurationManager
                 TimeSpan.FromHours(eveningEndHours),
                 TimeSpan.FromHours(dailyResetHours)),
             new PushoverConfiguration(pushoverApiToken, pushoverUserKey, pushoverAppName),
-            pushoverTestEnabled);
+            pushoverTestEnabled,
+            new MqttConfiguration(
+                mqttBrokerHostname,
+                mqttBrokerPort,
+                mqttTopicPrefix,
+                mqttClientId,
+                mqttUsername,
+                mqttPassword));
 
         Logger.Info(Tag,
             $"Loaded config: utcOffset={offsetHours:0.##}, " +
@@ -94,7 +116,8 @@ public static class ConfigurationManager
             $"evening={eveningStartHours:0.##}-{eveningEndHours:0.##}, " +
             $"dailyReset={dailyResetHours:0.##}, " +
             $"pushoverConfigured={configuration.Pushover.IsConfigured}, " +
-            $"pushoverTestEnabled={configuration.PushoverTestEnabled}");
+            $"pushoverTestEnabled={configuration.PushoverTestEnabled}, " +
+            $"mqttConfigured={configuration.Mqtt.IsConfigured}");
 
         return configuration;
     }

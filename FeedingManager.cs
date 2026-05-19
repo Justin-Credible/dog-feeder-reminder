@@ -102,6 +102,7 @@ public class FeedingManager
     readonly TimeSpan morningWindowEnd;
     readonly TimeSpan eveningWindowStart;
     readonly TimeSpan eveningWindowEnd;
+    MqttManager mqttManager;
 
     bool morningFed;
     bool eveningFed;
@@ -177,6 +178,11 @@ public class FeedingManager
         CurrentIndicatorState = ComputeIndicatorState(this.nowProvider());
     }
 
+    public void RegisterMqttManager(MqttManager mqttManager)
+    {
+        this.mqttManager = mqttManager;
+    }
+
     public async Task StartMonitoringAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -223,6 +229,7 @@ public class FeedingManager
 
         Logger.Info(Tag, "Feed button pressed; feeding state advanced.");
         PublishIndicatorStateIfChanged(nowProvider(), forcePublish: true);
+        PublishStateToMqtt();
     }
 
     public void MarkFeeding(FeedingWindow window)
@@ -244,6 +251,7 @@ public class FeedingManager
 
         Logger.Info(Tag, $"{window} feeding marked from external request.");
         PublishIndicatorStateIfChanged(now, forcePublish: true);
+        PublishStateToMqtt();
     }
 
     public void ResetFeedings()
@@ -258,6 +266,7 @@ public class FeedingManager
 
         Logger.Info(Tag, "Feeding state manually reset.");
         PublishIndicatorStateIfChanged(nowProvider(), forcePublish: true);
+        PublishStateToMqtt();
     }
 
     public void ToggleVacationMode()
@@ -276,6 +285,31 @@ public class FeedingManager
 
         Logger.Info(Tag, $"Vacation mode {(IsVacationModeEnabled ? "enabled" : "disabled")}." );
         PublishIndicatorStateIfChanged(now, forcePublish: true);
+        PublishStateToMqtt();
+    }
+
+    public void SetVacationMode(bool enabled)
+    {
+        var now = nowProvider();
+        lock (gate)
+        {
+            if (vacationModeEnabled == enabled)
+            {
+                return;
+            }
+
+            vacationModeEnabled = enabled;
+            if (vacationModeEnabled)
+            {
+                // Prevent immediate catch-up pushes when entering vacation mode.
+                morningMissedNotificationSent = true;
+                eveningMissedNotificationSent = true;
+            }
+        }
+
+        Logger.Info(Tag, $"Vacation mode {(enabled ? "enabled" : "disabled")}.");
+        PublishIndicatorStateIfChanged(now, forcePublish: true);
+        PublishStateToMqtt();
     }
 
     public FeedingStatusSnapshot GetStatusSnapshot()
@@ -455,5 +489,31 @@ public class FeedingManager
         }
 
         return $"{hour12}:{minutes:00}{meridiem}";
+    }
+
+    void PublishStateToMqtt()
+    {
+        if (mqttManager == null)
+        {
+            return;
+        }
+
+        lock (gate)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await mqttManager.PublishMorningFedStateAsync(morningFed);
+                    await mqttManager.PublishEveningFedStateAsync(eveningFed);
+                    await mqttManager.PublishVacationModeStateAsync(vacationModeEnabled);
+                    await mqttManager.PublishFeedingStatusSnapshotAsync(GetStatusSnapshot());
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(Tag, $"Failed to publish state to MQTT: {ex.Message}");
+                }
+            });
+        }
     }
 }

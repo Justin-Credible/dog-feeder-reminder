@@ -31,6 +31,16 @@ DogFeeder:
     PushoverAppName: Dog Feeder Reminder
     PushoverTest: false
 
+    # MQTT broker settings (for Home Assistant integration).
+    # Leave MqttBrokerHostname empty to disable MQTT.
+    # MqttBrokerHostname: 192.168.1.100
+    # MqttBrokerPort: 1883
+    # MqttTopicPrefix: dog-feeder
+    # MqttClientId: dog-feeder-device
+    # Set these if Mosquitto requires authentication.
+    # MqttUsername: mqttuser
+    # MqttPassword: change-me
+
 # MeadowCloud:
     # Enable Logging, Events, Command + Control
     # Enabled: false

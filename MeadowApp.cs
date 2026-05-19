@@ -38,6 +38,7 @@ public class MeadowApp : App<F7FeatherV2>
     PushNotificationManager pushNotificationManager;
     FeedingManager feedingManager;
     PowerStatusManager powerStatusManager;
+    MqttManager mqttManager;
     readonly object feedButtonGate = new object();
     DateTimeOffset lastFeedButtonPressedAt = DateTimeOffset.MinValue;
     DateTimeOffset currentFeedButtonPressStartedAt = DateTimeOffset.MinValue;
@@ -94,6 +95,10 @@ public class MeadowApp : App<F7FeatherV2>
         OnIndicatorStateChanged(feedingManager.CurrentIndicatorState);
         powerStatusManager = new PowerStatusManager(Device);
 
+        mqttManager = new MqttManager(configuration.Mqtt);
+        mqttManager.RegisterCommandHandlers(HandleMqttFeedingCommand, HandleMqttVacationCommand);
+        feedingManager.RegisterMqttManager(mqttManager);
+
         var deviceName = string.IsNullOrWhiteSpace(Device.Information.DeviceName)
             ? "(unknown device name)"
             : Device.Information.DeviceName;
@@ -126,6 +131,9 @@ public class MeadowApp : App<F7FeatherV2>
 
         await wifiManager.WaitForNetworkReadyAsync();
         await deviceTimeManager.WaitForValidTimeAsync();
+        
+        _ = Task.Run(mqttManager.InitializeAsync, appLifetimeSource.Token);
+        
         await webServerManager.WaitForStartedAsync();
 
         startupBlinkSource.Cancel();
@@ -375,5 +383,76 @@ public class MeadowApp : App<F7FeatherV2>
             default:
                 return VacationPatternPauseDuration;
         }
+    }
+
+    void HandleMqttFeedingCommand(string payload)
+    {
+        var command = NormalizeMqttCommand(payload);
+        if (command == null)
+        {
+            return;
+        }
+
+        switch (command)
+        {
+            case "morning":
+                feedingManager.MarkFeeding(FeedingWindow.Morning);
+                break;
+            case "evening":
+                feedingManager.MarkFeeding(FeedingWindow.Evening);
+                break;
+            case "both":
+                feedingManager.MarkFeeding(FeedingWindow.Morning);
+                feedingManager.MarkFeeding(FeedingWindow.Evening);
+                break;
+            case "reset":
+                feedingManager.ResetFeedings();
+                break;
+            case "advance":
+                feedingManager.OnFeedButtonPressed();
+                break;
+            default:
+                break;
+        }
+    }
+
+    void HandleMqttVacationCommand(string payload)
+    {
+        var command = NormalizeMqttCommand(payload);
+        if (command == null)
+        {
+            return;
+        }
+
+        switch (command)
+        {
+            case "toggle":
+                feedingManager.ToggleVacationMode();
+                break;
+            case "on":
+                feedingManager.SetVacationMode(true);
+                break;
+            case "off":
+                feedingManager.SetVacationMode(false);
+                break;
+            default:
+                break;
+        }
+    }
+
+    static string NormalizeMqttCommand(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return null;
+        }
+
+        var command = payload.Trim();
+        if (command.Length > 32)
+        {
+            return null;
+        }
+
+        return command.ToLowerInvariant();
     }
 }
