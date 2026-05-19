@@ -6,7 +6,9 @@ It helps our familiy (mostly the children!) prevent overfeeding the dog by keepi
 
 It can also send push notification reminders at the end of the feeding window if nobody fed. It also exposes status via a web page and/or a MQTT topic, which can be then shown in the Home Assistant dashboard.
 
-A 3D printable case is also available in the printables directory.
+A 3D printable case is also available in the root (3mf file).
+
+Set WiFi credentials using `meadow device config wifi --ssid SSID --passcode PASSWORD`, make any needed changes in `app.config.yaml`, and then use `meadow run app` to deploy to the MCU.
 
 ### Home Assitant configuration
 
