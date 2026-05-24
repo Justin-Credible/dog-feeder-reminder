@@ -12,8 +12,14 @@ public class DeviceTimeManager
     bool deviceTimeLogged;
     bool monitoringStarted;
     readonly TaskCompletionSource<bool> validTimeSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly TimeSpan utcOffset;
 
-    public DateTime CurrentDeviceTime => DateTime.Now;
+    public DeviceTimeManager(TimeSpan utcOffset = default)
+    {
+        this.utcOffset = utcOffset;
+    }
+
+    public DateTime CurrentDeviceTime => DateTime.UtcNow + utcOffset;
 
     public string CurrentDeviceTimeText => FormatDeviceTime(CurrentDeviceTime);
 
@@ -47,7 +53,7 @@ public class DeviceTimeManager
             {
                 deviceTimeLogged = true;
                 validTimeSource.TrySetResult(true);
-                Logger.Info(Tag, $"Device time set to {CurrentDeviceTimeText}");
+                Logger.Info(Tag, $"Device time set to {CurrentDeviceTimeText} (using UTC offset of {utcOffset})");
                 return;
             }
 
@@ -55,9 +61,9 @@ public class DeviceTimeManager
         }
     }
 
-    static bool IsDeviceTimeValid()
+    bool IsDeviceTimeValid()
     {
-        return DateTime.Now >= MinimumValidDeviceTime;
+        return DateTime.UtcNow + utcOffset >= MinimumValidDeviceTime;
     }
 
     static string FormatDeviceTime(DateTime value)

@@ -19,12 +19,14 @@ public class PushNotificationManager
 
     readonly PushoverConfiguration pushoverConfiguration;
     readonly HttpClient httpClient;
+    readonly TimeSpan utcOffset;
 
-    public PushNotificationManager(PushoverConfiguration pushoverConfiguration, HttpClient httpClient = null)
+    public PushNotificationManager(PushoverConfiguration pushoverConfiguration, HttpClient httpClient = null, TimeSpan utcOffset = default)
     {
         this.pushoverConfiguration = pushoverConfiguration;
         this.httpClient = httpClient ?? new HttpClient();
         this.httpClient.Timeout = TimeSpan.FromSeconds(15);
+        this.utcOffset = utcOffset;
     }
 
     public Task SendMissedFeedingNotificationAsync(FeedingWindow window, DateTime triggeredAt)
@@ -35,9 +37,10 @@ public class PushNotificationManager
             return Task.CompletedTask;
         }
 
+        var localTime = triggeredAt + utcOffset;
         return SendAsync(
             title: $"{pushoverConfiguration.AppName} reminder",
-            message: $"Missed {window.ToString().ToLowerInvariant()} feeding window at {triggeredAt:yyyy-MM-dd HH:mm:ss}.",
+            message: $"Missed {window.ToString().ToLowerInvariant()} feeding window at {localTime:yyyy-MM-dd HH:mm:ss}.",
             successLogMessage: $"Pushover notification sent for missed {window} feeding.");
     }
 
@@ -49,9 +52,10 @@ public class PushNotificationManager
             return false;
         }
 
+        var localTime = triggeredAt + utcOffset;
         return await SendAsync(
             title: $"{pushoverConfiguration.AppName} test",
-            message: $"This is a test push notification sent at {triggeredAt:yyyy-MM-dd HH:mm:ss}.",
+            message: $"This is a test push notification sent at {localTime:yyyy-MM-dd HH:mm:ss}.",
             successLogMessage: "Pushover test notification sent.");
     }
 

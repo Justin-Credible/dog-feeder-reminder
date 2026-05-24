@@ -82,11 +82,10 @@ public class MeadowApp : App<F7FeatherV2>
             Device.NetworkAdapters.Primary<IWiFiNetworkAdapter>()
         );
 
-        deviceTimeManager = new DeviceTimeManager();
-        deviceTimeManager.StartMonitoring();
-
         var configuration = ConfigurationManager.LoadDogFeederConfiguration(Settings);
-        pushNotificationManager = new PushNotificationManager(configuration.Pushover);
+        deviceTimeManager = new DeviceTimeManager(configuration.FeedingScheduleUtcOffset);
+        deviceTimeManager.StartMonitoring();
+        pushNotificationManager = new PushNotificationManager(configuration.Pushover, utcOffset: configuration.FeedingScheduleUtcOffset);
         feedingManager = new FeedingManager(
             pushNotificationManager,
             configuration.FeedingSchedule,
