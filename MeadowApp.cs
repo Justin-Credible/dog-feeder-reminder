@@ -64,6 +64,14 @@ public class MeadowApp : App<F7FeatherV2>
         AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
+        // Catch coprocessor/OS-level system errors (e.g. ESP32 WiFi coprocessor panics) so we
+        // can log them to disk before Meadow OS auto-resets the device. These never surface as
+        // managed exceptions, so they wouldn't otherwise show up in our app log.
+        if (Device.ReliabilityService != null)
+        {
+            Device.ReliabilityService.MeadowSystemError += OnMeadowSystemError;
+        }
+
         Logger.Info(Tag, "Initialize...");
 
         // Initialize hardware interfaces
@@ -201,6 +209,16 @@ public class MeadowApp : App<F7FeatherV2>
     {
         Logger.Error(Tag, $"Unobserved task exception: {args.Exception.Message}");
         args.SetObserved();
+    }
+
+    void OnMeadowSystemError(MeadowSystemErrorInfo error, bool recommendReset, out bool forceReset)
+    {
+        Logger.Error(Tag, $"FATAL: Meadow system error (coprocessor/OS level): {error}");
+        Logger.Error(Tag, $"Reset recommended by Meadow OS: {recommendReset}");
+
+        // Preserve Meadow OS's default recommendation; these errors originate below the managed
+        // app (e.g. ESP32 WiFi coprocessor firmware panics) and are not safe to ignore.
+        forceReset = recommendReset;
     }
 
     async Task BlinkPlatformLedUntilReadyAsync(CancellationToken cancellationToken)
