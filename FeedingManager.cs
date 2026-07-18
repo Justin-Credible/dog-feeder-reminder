@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -90,6 +92,22 @@ public readonly struct FeedingScheduleConfiguration
         TimeSpan.FromHours(4));
 }
 
+readonly struct PersistedFeedingState
+{
+    public bool MorningFed { get; }
+    public bool EveningFed { get; }
+    public bool VacationModeEnabled { get; }
+    public DateTime? LastResetDate { get; }
+
+    public PersistedFeedingState(bool morningFed, bool eveningFed, bool vacationModeEnabled, DateTime? lastResetDate)
+    {
+        MorningFed = morningFed;
+        EveningFed = eveningFed;
+        VacationModeEnabled = vacationModeEnabled;
+        LastResetDate = lastResetDate;
+    }
+}
+
 public class FeedingManager
 {
     const string Tag = "FeedingManager";
@@ -102,6 +120,7 @@ public class FeedingManager
     readonly TimeSpan morningWindowEnd;
     readonly TimeSpan eveningWindowStart;
     readonly TimeSpan eveningWindowEnd;
+    readonly string persistedStateFilePath;
     MqttManager mqttManager;
 
     bool morningFed;
@@ -162,10 +181,12 @@ public class FeedingManager
     public FeedingManager(
         PushNotificationManager pushNotificationManager,
         FeedingScheduleConfiguration? scheduleConfiguration = null,
-        Func<DateTime> nowProvider = null)
+        Func<DateTime> nowProvider = null,
+        string persistedStateFilePath = null)
     {
         this.pushNotificationManager = pushNotificationManager;
         this.nowProvider = nowProvider ?? (() => DateTime.Now);
+        this.persistedStateFilePath = persistedStateFilePath;
 
         var schedule = scheduleConfiguration ?? FeedingScheduleConfiguration.Default;
         morningWindowStart = schedule.MorningWindowStart;
@@ -230,6 +251,7 @@ public class FeedingManager
         Logger.Info(Tag, "Feed button pressed; feeding state advanced.");
         PublishIndicatorStateIfChanged(nowProvider(), forcePublish: true);
         PublishStateToMqtt();
+        PersistState();
     }
 
     public void MarkFeeding(FeedingWindow window)
@@ -252,6 +274,7 @@ public class FeedingManager
         Logger.Info(Tag, $"{window} feeding marked from external request.");
         PublishIndicatorStateIfChanged(now, forcePublish: true);
         PublishStateToMqtt();
+        PersistState();
     }
 
     public void ResetFeedings()
@@ -267,6 +290,7 @@ public class FeedingManager
         Logger.Info(Tag, "Feeding state manually reset.");
         PublishIndicatorStateIfChanged(nowProvider(), forcePublish: true);
         PublishStateToMqtt();
+        PersistState();
     }
 
     public void ToggleVacationMode()
@@ -286,6 +310,7 @@ public class FeedingManager
         Logger.Info(Tag, $"Vacation mode {(IsVacationModeEnabled ? "enabled" : "disabled")}." );
         PublishIndicatorStateIfChanged(now, forcePublish: true);
         PublishStateToMqtt();
+        PersistState();
     }
 
     public void SetVacationMode(bool enabled)
@@ -310,6 +335,7 @@ public class FeedingManager
         Logger.Info(Tag, $"Vacation mode {(enabled ? "enabled" : "disabled")}.");
         PublishIndicatorStateIfChanged(now, forcePublish: true);
         PublishStateToMqtt();
+        PersistState();
     }
 
     public FeedingStatusSnapshot GetStatusSnapshot()
@@ -357,6 +383,26 @@ public class FeedingManager
             // missed-notification already accounted for until the next daily reset.
             morningMissedNotificationSent = now.TimeOfDay >= morningWindowEnd;
             eveningMissedNotificationSent = now.TimeOfDay >= eveningWindowEnd;
+
+            if (TryLoadPersistedState(out var persisted))
+            {
+                morningFed = persisted.MorningFed;
+                eveningFed = persisted.EveningFed;
+                vacationModeEnabled = persisted.VacationModeEnabled;
+                if (persisted.LastResetDate.HasValue)
+                {
+                    lastResetDate = persisted.LastResetDate.Value;
+                }
+
+                // Recompute suppression given the restored state so we don't immediately
+                // re-send a missed-feeding notification for a window that was already fed.
+                morningMissedNotificationSent = morningFed || now.TimeOfDay >= morningWindowEnd;
+                eveningMissedNotificationSent = eveningFed || now.TimeOfDay >= eveningWindowEnd;
+
+                Logger.Info(Tag,
+                    $"Restored feeding state from disk: morningFed={morningFed}, " +
+                    $"eveningFed={eveningFed}, vacationMode={vacationModeEnabled}.");
+            }
         }
     }
 
@@ -381,6 +427,8 @@ public class FeedingManager
             lastResetDate = now.Date;
             Logger.Info(Tag, $"Daily feeding state reset at {FormatTimeLabel(dailyResetTime)} window.");
         }
+
+        PersistState();
     }
 
     async Task SendMissedFeedingNotificationsIfNeededAsync(DateTime now)
@@ -514,6 +562,88 @@ public class FeedingManager
                     Logger.Warn(Tag, $"Failed to publish state to MQTT: {ex.Message}");
                 }
             });
+        }
+    }
+
+    void PersistState()
+    {
+        if (string.IsNullOrWhiteSpace(persistedStateFilePath))
+        {
+            return;
+        }
+
+        bool localMorningFed;
+        bool localEveningFed;
+        bool localVacationModeEnabled;
+        DateTime localLastResetDate;
+
+        lock (gate)
+        {
+            localMorningFed = morningFed;
+            localEveningFed = eveningFed;
+            localVacationModeEnabled = vacationModeEnabled;
+            localLastResetDate = lastResetDate;
+        }
+
+        try
+        {
+            var directory = Path.GetDirectoryName(persistedStateFilePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var content =
+                $"MorningFed={localMorningFed}{Environment.NewLine}" +
+                $"EveningFed={localEveningFed}{Environment.NewLine}" +
+                $"VacationModeEnabled={localVacationModeEnabled}{Environment.NewLine}" +
+                $"LastResetDate={localLastResetDate:yyyy-MM-dd}{Environment.NewLine}";
+
+            File.WriteAllText(persistedStateFilePath, content);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn(Tag, $"Failed to persist feeding state: {ex.Message}");
+        }
+    }
+
+    bool TryLoadPersistedState(out PersistedFeedingState state)
+    {
+        state = default;
+
+        if (string.IsNullOrWhiteSpace(persistedStateFilePath) || !File.Exists(persistedStateFilePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in File.ReadAllLines(persistedStateFilePath))
+            {
+                var separatorIndex = line.IndexOf('=');
+                if (separatorIndex <= 0)
+                {
+                    continue;
+                }
+
+                values[line.Substring(0, separatorIndex)] = line.Substring(separatorIndex + 1);
+            }
+
+            var morningFedValue = values.TryGetValue("MorningFed", out var m) && bool.TryParse(m, out var mv) && mv;
+            var eveningFedValue = values.TryGetValue("EveningFed", out var e) && bool.TryParse(e, out var ev) && ev;
+            var vacationModeValue = values.TryGetValue("VacationModeEnabled", out var v) && bool.TryParse(v, out var vv) && vv;
+            DateTime? lastResetDateValue = values.TryGetValue("LastResetDate", out var d) && DateTime.TryParse(d, out var dv)
+                ? dv.Date
+                : (DateTime?)null;
+
+            state = new PersistedFeedingState(morningFedValue, eveningFedValue, vacationModeValue, lastResetDateValue);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn(Tag, $"Failed to load persisted feeding state: {ex.Message}");
+            return false;
         }
     }
 }

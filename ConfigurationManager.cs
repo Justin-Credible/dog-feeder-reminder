@@ -11,19 +11,36 @@ public readonly struct DogFeederConfiguration
     public PushoverConfiguration Pushover { get; }
     public bool PushoverTestEnabled { get; }
     public MqttConfiguration Mqtt { get; }
+    public DiskLoggingConfiguration DiskLogging { get; }
 
     public DogFeederConfiguration(
         TimeSpan feedingScheduleUtcOffset,
         FeedingScheduleConfiguration feedingSchedule,
         PushoverConfiguration pushover,
         bool pushoverTestEnabled,
-        MqttConfiguration mqtt = default)
+        MqttConfiguration mqtt = default,
+        DiskLoggingConfiguration diskLogging = default)
     {
         FeedingScheduleUtcOffset = feedingScheduleUtcOffset;
         FeedingSchedule = feedingSchedule;
         Pushover = pushover;
         PushoverTestEnabled = pushoverTestEnabled;
         Mqtt = mqtt;
+        DiskLogging = diskLogging;
+    }
+}
+
+public readonly struct DiskLoggingConfiguration
+{
+    public bool Enabled { get; }
+    public LogLevel MinLevel { get; }
+    public long MaxFileSizeBytes { get; }
+
+    public DiskLoggingConfiguration(bool enabled, LogLevel minLevel, long maxFileSizeBytes)
+    {
+        Enabled = enabled;
+        MinLevel = minLevel;
+        MaxFileSizeBytes = maxFileSizeBytes;
     }
 }
 
@@ -68,6 +85,9 @@ public static class ConfigurationManager
     const string MqttClientIdKey = "MqttClientId";
     const string MqttUsernameKey = "MqttUsername";
     const string MqttPasswordKey = "MqttPassword";
+    const string DiskLoggingEnabledKey = "DiskLoggingEnabled";
+    const string DiskLogLevelKey = "DiskLogLevel";
+    const string DiskLogMaxFileSizeKbKey = "DiskLogMaxFileSizeKb";
 
     static readonly TimeSpan DefaultFeedingScheduleUtcOffset = TimeSpan.FromHours(-7);
 
@@ -91,6 +111,7 @@ public static class ConfigurationManager
         var mqttClientId = GetString(settings, MqttClientIdKey, string.Empty);
         var mqttUsername = GetString(settings, MqttUsernameKey, string.Empty);
         var mqttPassword = GetString(settings, MqttPasswordKey, string.Empty);
+        var diskLogging = LoadDiskLoggingConfiguration(settings);
 
         var configuration = new DogFeederConfiguration(
             TimeSpan.FromHours(offsetHours),
@@ -108,7 +129,8 @@ public static class ConfigurationManager
                 mqttTopicPrefix,
                 mqttClientId,
                 mqttUsername,
-                mqttPassword));
+                mqttPassword),
+            diskLogging);
 
         Logger.Info(Tag,
             $"Loaded config: utcOffset={offsetHours:0.##}, " +
@@ -117,9 +139,40 @@ public static class ConfigurationManager
             $"dailyReset={dailyResetHours:0.##}, " +
             $"pushoverConfigured={configuration.Pushover.IsConfigured}, " +
             $"pushoverTestEnabled={configuration.PushoverTestEnabled}, " +
-            $"mqttConfigured={configuration.Mqtt.IsConfigured}");
+            $"mqttConfigured={configuration.Mqtt.IsConfigured}, " +
+            $"diskLoggingEnabled={diskLogging.Enabled}");
 
         return configuration;
+    }
+
+    /// <summary>
+    /// Loads disk logging settings. Split out so this can be configured before the rest of the
+    /// application starts, letting boot-time log entries be captured to disk as early as possible.
+    /// </summary>
+    public static DiskLoggingConfiguration LoadDiskLoggingConfiguration(IDictionary<string, string> settings)
+    {
+        var enabled = GetBool(settings, DiskLoggingEnabledKey, false);
+        var levelText = GetString(settings, DiskLogLevelKey, "Info");
+        var maxFileSizeKb = GetDouble(settings, DiskLogMaxFileSizeKbKey, 256);
+
+        return new DiskLoggingConfiguration(enabled, ParseLogLevel(levelText), (long)maxFileSizeKb * 1024);
+    }
+
+    static LogLevel ParseLogLevel(string value)
+    {
+        switch ((value ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            case "trace":
+            case "debug":
+                return LogLevel.Debug;
+            case "warn":
+            case "warning":
+                return LogLevel.Warn;
+            case "error":
+                return LogLevel.Error;
+            default:
+                return LogLevel.Info;
+        }
     }
 
     static double GetDouble(IDictionary<string, string> settings, string key, double fallback)

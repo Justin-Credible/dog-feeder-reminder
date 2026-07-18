@@ -4,6 +4,7 @@ using Meadow.Foundation.Leds;
 using Meadow.Hardware;
 using Meadow.Peripherals.Leds;
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -51,6 +52,18 @@ public class MeadowApp : App<F7FeatherV2>
 
     public override async Task Initialize()
     {
+        // Configure disk logging as the very first thing so boot entries are captured.
+        var diskLoggingConfig = ConfigurationManager.LoadDiskLoggingConfiguration(Settings);
+        Logger.ConfigureFileLogging(
+            diskLoggingConfig.Enabled,
+            diskLoggingConfig.MinLevel,
+            diskLoggingConfig.MaxFileSizeBytes,
+            Device.PlatformOS.FileSystem.DataDirectory);
+
+        // Catch anything that escapes normal handling so we can log it to disk before a reboot.
+        AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
         Logger.Info(Tag, "Initialize...");
 
         // Initialize hardware interfaces
@@ -84,12 +97,14 @@ public class MeadowApp : App<F7FeatherV2>
 
         var configuration = ConfigurationManager.LoadDogFeederConfiguration(Settings);
         deviceTimeManager = new DeviceTimeManager(configuration.FeedingScheduleUtcOffset);
+        Logger.SetDeviceTimeProvider(() => deviceTimeManager.IsDeviceTimeValid() ? (DateTime?)deviceTimeManager.CurrentDeviceTime : null);
         deviceTimeManager.StartMonitoring();
         pushNotificationManager = new PushNotificationManager(configuration.Pushover, utcOffset: configuration.FeedingScheduleUtcOffset);
         feedingManager = new FeedingManager(
             pushNotificationManager,
             configuration.FeedingSchedule,
-            nowProvider: () => DateTime.UtcNow + configuration.FeedingScheduleUtcOffset);
+            nowProvider: () => DateTime.UtcNow + configuration.FeedingScheduleUtcOffset,
+            persistedStateFilePath: Path.Combine(Device.PlatformOS.FileSystem.DataDirectory, "feeding-state.txt"));
         feedingManager.IndicatorStateChanged += OnIndicatorStateChanged;
         OnIndicatorStateChanged(feedingManager.CurrentIndicatorState);
         powerStatusManager = new PowerStatusManager(Device);
@@ -102,6 +117,12 @@ public class MeadowApp : App<F7FeatherV2>
             ? "(unknown device name)"
             : Device.Information.DeviceName;
 
+        var systemLogFilePaths = new SystemLogFilePaths(
+            osBootLogPath: Path.Combine(Device.PlatformOS.FileSystem.FileSystemRoot, F7ReliabilityService.OsMessageFile),
+            appCrashPath: MeadowOS.FileSystem.AppCrashFile,
+            runtimeCrashPath: MeadowOS.FileSystem.RuntimeCrashFile,
+            osCrashPath: MeadowOS.FileSystem.OsCrashFile);
+
         webServerManager = new WebServerManager(
             wifiManager,
             deviceTimeManager,
@@ -111,7 +132,8 @@ public class MeadowApp : App<F7FeatherV2>
             configuration.Pushover,
             configuration.PushoverTestEnabled,
             DateTimeOffset.UtcNow,
-            deviceName);
+            deviceName,
+            systemLogFilePaths);
 
         await wifiManager.InitializeAsync();
 
@@ -153,6 +175,32 @@ public class MeadowApp : App<F7FeatherV2>
         Logger.Info(Tag, "System ready. Platform LED set to solid on.");
 
         _ = Task.Run(() => MaintainConnectivityAndPlatformStateAsync(appLifetimeSource.Token), appLifetimeSource.Token);
+    }
+
+    public override Task OnError(Exception e)
+    {
+        Logger.Error(Tag, $"FATAL: Unhandled app error triggering reboot: {e.GetType().Name}: {e.Message}");
+        Logger.Error(Tag, e.StackTrace ?? "(no stack trace available)");
+        return base.OnError(e);
+    }
+
+    void OnAppDomainUnhandledException(object sender, UnhandledExceptionEventArgs args)
+    {
+        if (args.ExceptionObject is Exception ex)
+        {
+            Logger.Error(Tag, $"FATAL: Unhandled exception triggering reboot: {ex.GetType().Name}: {ex.Message}");
+            Logger.Error(Tag, ex.StackTrace ?? "(no stack trace available)");
+        }
+        else
+        {
+            Logger.Error(Tag, $"FATAL: Unhandled non-exception error triggering reboot: {args.ExceptionObject}");
+        }
+    }
+
+    void OnUnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs args)
+    {
+        Logger.Error(Tag, $"Unobserved task exception: {args.Exception.Message}");
+        args.SetObserved();
     }
 
     async Task BlinkPlatformLedUntilReadyAsync(CancellationToken cancellationToken)
@@ -266,7 +314,7 @@ public class MeadowApp : App<F7FeatherV2>
 
     void OnIndicatorStateChanged(FeedingIndicatorState state)
     {
-        Logger.Info(Tag, $"Updating feeding indicator LEDs: Day {(state.DayLedOn ? "ON" : "off")}, Night {(state.NightLedOn ? "ON" : "off")}");
+        Logger.Debug(Tag, $"Updating feeding indicator LEDs: Day {(state.DayLedOn ? "ON" : "off")}, Night {(state.NightLedOn ? "ON" : "off")}");
 
         dayFeedingLed.State = state.DayLedOn;
         nightFeedingLed.State = state.NightLedOn;

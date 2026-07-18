@@ -23,6 +23,8 @@ public class DeviceTimeManager
 
     public string CurrentDeviceTimeText => FormatDeviceTime(CurrentDeviceTime);
 
+    public bool IsDeviceTimeValid() => DateTime.UtcNow + utcOffset >= MinimumValidDeviceTime;
+
     public Task WaitForValidTimeAsync()
     {
         if (IsDeviceTimeValid())
@@ -59,11 +61,6 @@ public class DeviceTimeManager
 
             await Task.Delay(1000);
         }
-    }
-
-    bool IsDeviceTimeValid()
-    {
-        return DateTime.UtcNow + utcOffset >= MinimumValidDeviceTime;
     }
 
     static string FormatDeviceTime(DateTime value)

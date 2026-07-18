@@ -133,7 +133,8 @@ public class HttpResponseManager
         html.AppendLine("        <section class=\"panel\">");
         html.AppendLine("            <h2>Device Diagnostics</h2>");
         html.AppendLine("            <p>System and network details are shown below for troubleshooting.</p>");
-        html.AppendLine("            <p>JSON endpoint: <a href=\"/api/diagnostics\">/api/diagnostics</a> | Feedings endpoint: <a href=\"/api/feedings\">/api/feedings</a></p>");
+        html.AppendLine("            <p>JSON endpoint: <a href=\"/api/diagnostics\">/api/diagnostics</a> | Feedings endpoint: <a href=\"/api/feedings\">/api/feedings</a> | Log file: <a href=\"/log.txt\">/log.txt</a></p>");
+        html.AppendLine("            <p>OS files: <a href=\"/system-log.txt\">Boot log</a> | <a href=\"/crash/app.txt\">App crash</a> | <a href=\"/crash/runtime.txt\">Runtime crash</a> | <a href=\"/crash/os.txt\">OS crash</a></p>");
         html.AppendLine("            <div class=\"grid\">");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">WiFi</span><div class=\"value\">{options.WiFiConnectionState}</div></div>");
         html.AppendLine($"                <div class=\"card\"><span class=\"label\">IP Address</span><div class=\"value\">{options.IpText}</div></div>");

@@ -10,6 +10,13 @@ Logging:
         Default: Information
 
 DogFeeder:
+    # Rolling disk log file, written to the device's data directory and viewable at /log.txt.
+    DiskLoggingEnabled: true
+    # Debug, Info, Warn, or Error. Only entries at this level or higher are written to disk.
+    DiskLogLevel: Info
+    # Maximum size (KB) of the active log file before it rolls over (one backup file is kept).
+    DiskLogMaxFileSizeKb: 256
+
     # Local schedule offset from UTC used for feeding window evaluation.
     # Example: -8 (Pacific Standard), -7 (Pacific Daylight), -5 (Eastern Standard)
     FeedingScheduleUtcOffsetHours: -7

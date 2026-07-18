@@ -8,6 +8,22 @@ using System.Threading.Tasks;
 
 namespace dog_feeder_reminder;
 
+public readonly struct SystemLogFilePaths
+{
+    public string OsBootLogPath { get; }
+    public string AppCrashPath { get; }
+    public string RuntimeCrashPath { get; }
+    public string OsCrashPath { get; }
+
+    public SystemLogFilePaths(string osBootLogPath, string appCrashPath, string runtimeCrashPath, string osCrashPath)
+    {
+        OsBootLogPath = osBootLogPath;
+        AppCrashPath = appCrashPath;
+        RuntimeCrashPath = runtimeCrashPath;
+        OsCrashPath = osCrashPath;
+    }
+}
+
 public class WebServerManager
 {
     const string Tag = "WebServerManager";
@@ -22,6 +38,7 @@ public class WebServerManager
     readonly bool pushoverTestEnabled;
     readonly DateTimeOffset startedAt;
     readonly string deviceName;
+    readonly SystemLogFilePaths systemLogFilePaths;
 
     HttpListener webServer;
     bool webServerStarted;
@@ -57,7 +74,8 @@ public class WebServerManager
         PushoverConfiguration pushoverConfiguration,
         bool pushoverTestEnabled,
         DateTimeOffset startedAt,
-        string deviceName)
+        string deviceName,
+        SystemLogFilePaths systemLogFilePaths = default)
     {
         this.wifiManager = wifiManager;
         this.deviceTimeManager = deviceTimeManager;
@@ -69,6 +87,7 @@ public class WebServerManager
         this.responseManager = new HttpResponseManager();
         this.startedAt = startedAt;
         this.deviceName = deviceName;
+        this.systemLogFilePaths = systemLogFilePaths;
     }
 
     public Task WaitForStartedAsync()
@@ -158,13 +177,32 @@ public class WebServerManager
         }
     }
 
+    static string ReadSystemFileText(string path, string missingMessage)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return missingMessage;
+        }
+
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to read '{path}': {ex.Message}";
+        }
+    }
+
     async Task ProcessRequestAsync(HttpListenerContext context)
     {
         var request = context.Request;
         var response = context.Response;
         var absolutePath = request.Url.AbsolutePath;
 
-        Logger.Info(Tag, $"HTTP {request.HttpMethod} {request.Url}");
+        Logger.Debug(Tag, $"HTTP {request.HttpMethod} {request.Url}");
 
         if (absolutePath.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase))
         {
@@ -204,6 +242,33 @@ public class WebServerManager
         {
             contentType = "application/json";
             body = BuildFeedingsJsonResponse();
+        }
+        else if (absolutePath.Equals("/log.txt", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType = "text/plain";
+            body = Logger.IsFileLoggingEnabled
+                ? Logger.ReadLogFileText()
+                : "Disk logging is disabled. Set DiskLoggingEnabled: true in app.config.yaml to enable it.";
+        }
+        else if (absolutePath.Equals("/system-log.txt", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType = "text/plain";
+            body = ReadSystemFileText(systemLogFilePaths.OsBootLogPath, "No OS boot log is present.");
+        }
+        else if (absolutePath.Equals("/crash/app.txt", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType = "text/plain";
+            body = ReadSystemFileText(systemLogFilePaths.AppCrashPath, "No app crash report is present.");
+        }
+        else if (absolutePath.Equals("/crash/runtime.txt", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType = "text/plain";
+            body = ReadSystemFileText(systemLogFilePaths.RuntimeCrashPath, "No runtime crash report is present.");
+        }
+        else if (absolutePath.Equals("/crash/os.txt", StringComparison.OrdinalIgnoreCase))
+        {
+            contentType = "text/plain";
+            body = ReadSystemFileText(systemLogFilePaths.OsCrashPath, "No OS crash report is present.");
         }
         else if (absolutePath.Equals("/", StringComparison.OrdinalIgnoreCase))
         {
