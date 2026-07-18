@@ -7,7 +7,7 @@ Lifecycle:
 Logging:
     LogLevel:
         # Trace, Debug, Information, Warning, or Error
-        Default: Information
+        Default: Debug
 
 DogFeeder:
     # Rolling disk log file, written to the device's data directory and viewable at /log.txt.
